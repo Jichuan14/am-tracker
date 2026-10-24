@@ -1010,7 +1010,10 @@ struct AlbumPreferencesView:View {
             model.onChange={ [weak self] in self?.updateMenu() }
             window=NSWindow(contentRect:NSRect(x:0,y:0,width:1100,height:680),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
             window.title="AM Track";window.minSize=NSSize(width:888,height:490);window.isReleasedWhenClosed=false
-            window.contentView=NSHostingView(rootView:AppContentView(model:model));window.center()
+            let content=NSHostingView(rootView:AppContentView(model:model))
+            // AppKit owns window sizing; flexible SwiftUI content must not enlarge it.
+            content.sizingOptions=[]
+            window.contentView=content;window.center()
             createAppMenu();updateMenu();showHistory()
             model.refreshMenuSong()
             // Playback notifications dispatch a prepared next song promptly; polling is a fallback.
