@@ -60,14 +60,46 @@ extension Archive {
             album:album,catalogID:"",reason:"",score:0,bucket:"Familiar",kind:.song,
             albumID:albumIdentity(artist:artist,title:album),trackIDs:[id],playbackIssue:nil)
     }
-    func recommendations(now:Date=Date(),limit:Int=10,log:Bool=false) throws -> [Recommendation] {
+    // Capture on the archive owner. Workers receive values, never this connection.
+    func recommendationSnapshot(now:Date=Date()) throws -> RecommendationSnapshot {
         try syncUnifiedHistory()
         let feedback=try recommendationFeedback(now:now),albums=try albumCollections()
-        let playbackCooldowns=try forYouPlaybackCooldowns(now:now)
+        return RecommendationSnapshot(now:now,feedback:feedback,albums:albums,
+            playbackCooldowns:try forYouPlaybackCooldowns(now:now),
+            modes:Dictionary(uniqueKeysWithValues:albums.map{($0.id,albumMode($0,feedback:feedback))}),
+            trackRows:try rows("SELECT t.*,m.album_artist,m.album_title FROM music_tracks t LEFT JOIN track_album_metadata m ON m.track_id=t.id ORDER BY t.id"),
+            historyRows:try rows("SELECT * FROM listening_history WHERE status='active' AND music_order IS NOT NULL ORDER BY music_order"),
+            libraryRows:try rows("SELECT l.*,a.track_id FROM library_tracks l JOIN track_aliases a ON a.kind='persistent' AND a.value=upper(l.persistent_id)"),
+            eventRows:try rows("SELECT * FROM unified_history WHERE recording_segments>0 ORDER BY datetime(first_observed_at),id"))
+    }
+    func recommendations(now:Date=Date(),limit:Int=10,log:Bool=false) throws -> [Recommendation] {
+        let selected=try recommendationSnapshot(now:now).scored(limit:limit)
+        if log { try logRecommendations(selected,at:now) }
+        return selected
+    }
+    func logRecommendations(_ selected:[Recommendation],at now:Date=Date()) throws {
+        if !selected.isEmpty {
+            let json=String(data:try JSONSerialization.data(withJSONObject:selected.map{$0.id}),encoding:.utf8)!
+            try exec("INSERT INTO recommendation_batches(created_at,track_ids) VALUES (?,?)",[stamp(now),json])
+        }
+    }
+}
+
+struct RecommendationSnapshot {
+    let now:Date
+    let feedback:[String:RecommendationFeedback]
+    let albums:[AlbumCollection]
+    let playbackCooldowns:[String:Double]
+    let modes:[String:AlbumListeningMode]
+    let trackRows,historyRows,libraryRows,eventRows:[[String:String]]
+    func scored(limit:Int=10) -> [Recommendation] {
+        // Each scoring job owns its formatters; no formatter or archive crosses workers.
+        let standard=ISO8601DateFormatter(),fractional=ISO8601DateFormatter()
+        fractional.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
+        func parsedDate(_ text:String?) -> Date? { text.flatMap{standard.date(from:$0) ?? fractional.date(from:$0)} }
         let albumMap=Dictionary(uniqueKeysWithValues:albums.map{($0.id,$0)})
-        let modes=Dictionary(uniqueKeysWithValues:albums.map{($0.id,albumMode($0,feedback:feedback))})
         var tracks:[String:TasteTrack]=[:]
-        for r in try rows("SELECT t.*,m.album_artist,m.album_title FROM music_tracks t LEFT JOIN track_album_metadata m ON m.track_id=t.id ORDER BY t.id") {
+        for r in trackRows {
             let id=r["id"]!,artist=r["album_artist"] ?? "",album=r["album_title"] ?? r["album"] ?? "",genre=r["genre"] ?? ""
             let key=albumIdentity(artist:artist,title:album)
             var vector:[String:Double]=[:]
@@ -77,7 +109,7 @@ extension Archive {
             var track=TasteTrack(id:id,title:r["title"] ?? "",artist:artist,album:album,catalogID:"",albumID:key,features:unit(vector),duration:Double(r["duration"] ?? "0") ?? 0)
             track.feedback=feedback[id] ?? RecommendationFeedback();tracks[id]=track
         }
-        let history=try rows("SELECT * FROM listening_history WHERE status='active' AND music_order IS NOT NULL ORDER BY music_order")
+        let history=historyRows
         // Preserve canonical occurrences, but do not treat each song in an album run as an independent choice.
         var start=0
         while start<history.count {
@@ -91,7 +123,7 @@ extension Archive {
             }
             start=end
         }
-        for r in try rows("SELECT l.*,a.track_id FROM library_tracks l JOIN track_aliases a ON a.kind='persistent' AND a.value=upper(l.persistent_id)") {
+        for r in libraryRows {
             guard let id=r["track_id"] else { continue }
             let count=max(tracks[id]?.libraryCount ?? 0,Double(r["play_count"] ?? "0") ?? 0)
             tracks[id]?.libraryCount=count
@@ -102,7 +134,7 @@ extension Archive {
         }
         // unified_history may expose multiple catalog aliases: use each canonical event only once.
         var seen=Set<String>(),events:[ListeningEvent]=[]
-        for r in try rows("SELECT * FROM unified_history WHERE recording_segments>0 ORDER BY datetime(first_observed_at),id") {
+        for r in eventRows {
             guard let eventID=r["id"],seen.insert(eventID).inserted,let id=r["track_id"],
                   let begin=parsedDate(r["first_observed_at"]),begin<=now else { continue }
             let heard=max(0,Double(r["observed_listening_seconds"] ?? "0") ?? 0),duration=Double(r["duration"] ?? "0") ?? 0
@@ -270,10 +302,6 @@ extension Archive {
             let diverse=remaining.filter{(artistCounts[normalized($0.artist)] ?? 0)<2 && normalized($0.artist) != selected.last.map{normalized($0.artist)}}
             guard let pick=choose(diverse.filter{$0.bucket==desired}) ?? choose(remaining.filter{$0.bucket==desired && (artistCounts[normalized($0.artist)] ?? 0)<2}) ?? choose(diverse) ?? choose(remaining) else { break }
             selected.append(pick);artistCounts[normalized(pick.artist),default:0] += 1
-        }
-        if log && !selected.isEmpty {
-            let json=String(data:try JSONSerialization.data(withJSONObject:selected.map{$0.id}),encoding:.utf8)!
-            try exec("INSERT INTO recommendation_batches(created_at,track_ids) VALUES (?,?)",[stamp(now),json])
         }
         return selected
     }

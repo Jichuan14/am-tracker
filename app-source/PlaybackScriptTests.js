@@ -90,13 +90,6 @@ function run(argv) {
     check(scenario(duplicateFollowing).response.following_ids.length === 0, 'album tracks cannot repeat as automatic follow-ups');
     var badFollowing = album();badFollowing.following_tracks = [{kind: 'album', ids: [c]}];
     check(scenario(badFollowing).response.status === 'invalid_id', 'automatic album follow-ups must be individual songs');
-    var nativeAlbum = album();nativeAlbum.native_queue = true;
-    nativeAlbum.following_tracks = [{kind: 'song', ids: [c]}];
-    var nativeResult = scenario(nativeAlbum);
-    check(!nativeResult.error && nativeResult.response.status === 'playing' && nativeResult.played[0].queued.length === 1 &&
-        nativeResult.response.album_ids.join(',') === [a,b].join(',') && nativeResult.response.pending_queue_ids.join(',') === [b,c].join(',') &&
-        nativeResult.response.following_ids.length === 0,
-        'continuous album playback uses a one-song source and returns the remaining album tracks before follow-ups for one ordered native queue');
     var whole = scenario(album());
     check(!whole.error && whole.response.from_start && whole.response.persistent_id === a && whole.response.track_count === 2, 'whole album starts with its first track');
     check(whole.made.length === 1 && whole.played[0].queued[1].persistentID === b, 'native playlist contains the next album track in order');
@@ -127,5 +120,5 @@ function run(argv) {
     check(badOrder.error && badOrder.played.length === 0 && badOrder.deleted.join(',') === 'NEW', 'unexpected native playlist order is rejected before playback and the scratch playlist is removed');
     var stalledAlbum = scenario(album(), {unavailable: true});
     check(stalledAlbum.error && stalledAlbum.waits === 24 && stalledAlbum.shuffle && stalledAlbum.repeat === 'one' && stalledAlbum.deleted.join(',') === 'NEW', 'failed album start restores playback modes and cleans the scratch playlist');
-    return 'PASS: song identity, aliases, missing IDs, permission errors; album completeness, first-track start, native queue order, shuffle/repeat, owned-playlist cleanup and read-only validation. No Music playback triggered.';
+    return 'PASS: song identity, aliases, missing IDs, permission errors; album completeness, first-track start, full album and one-follow-up order, shuffle/repeat, owned-playlist cleanup and read-only validation. No Music playback triggered.';
 }

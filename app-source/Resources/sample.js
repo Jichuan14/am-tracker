@@ -14,6 +14,7 @@ if (result.running) {
         result.disc_count = read(function () { return t.discCount(); }, 0);
         result.track_number = read(function () { return t.trackNumber(); }, 0);
         result.track_count = read(function () { return t.trackCount(); }, 0);
+        result.track_class = read(function () { return t.class(); }, '');
         result.persistent_id = read(function () { return t.persistentID(); }, '');
         result.duration = read(function () { return t.duration(); }, 0);
         result.position = read(function () { return music.playerPosition(); }, 0);

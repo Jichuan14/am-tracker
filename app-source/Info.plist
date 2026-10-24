@@ -13,15 +13,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.7.0</string>
+	<string>2.9.0</string>
 	<key>CFBundleVersion</key>
-	<string>16</string>
+	<string>23</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>AM Track reads your current song, exact library identities and local song metadata to save listening history and resolve background queue additions. Play starts a selected library song or saved album. Next for you adds recommended catalog songs to Music’s queue without activating Music or changing playback. Automatic queueing adds replacements after songs finish or are skipped, and waits until album follow-ups are playing.</string>
+	<string>AM Track reads your current song, exact library identities and local song metadata to save listening history and resolve background queue additions. Play starts a selected library song or saved album. Next for you keeps one recommended catalog song queued in Music and prepares future song IDs locally, without activating Music or changing the current song. Automatic queueing adds a prepared next song after playback advances, and waits until album follow-ups are playing.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

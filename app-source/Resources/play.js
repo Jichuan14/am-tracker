@@ -87,13 +87,12 @@ function run(argv) {
         playlist = music.UserPlaylist({name: 'AM Track · ' + request.album, description: owner});
         playlist.make();
         playlistID = playlist.persistentID();
-        // Continuous mode uses one native manual queue for every remaining
-        // album track and follow-up. A one-song source prevents the source
-        // playlist from replaying them after the manual queue drains.
-        var sourceTracks = request.native_queue ? resolved.slice(0, 1) : resolved.concat(continuation);
+        // Assemble the full album and its single recommended follow-up before
+        // playback. Later recommendations are held locally by AM Track.
+        var sourceTracks = resolved.concat(continuation);
         sourceTracks.forEach(function (track) { music.duplicate(track.track, {to: playlist}); });
         var queued = playlist.tracks.persistentID();
-        var expectedSource = request.native_queue ? ids.slice(0, 1) : fullIDs;
+        var expectedSource = fullIDs;
         if (JSON.stringify(queued) !== JSON.stringify(expectedSource)) throw new Error('Album playlist order could not be confirmed.');
         if (request.validate_queue_only) return JSON.stringify({status: 'queue_validated', first_id: ids[0], track_count: ids.length});
         modesChanged = true;
@@ -113,7 +112,7 @@ function run(argv) {
                 try { music.delete(old[0]); } catch (_) { /* An old managed playlist may remain if Music refuses cleanup. */ }
             }
         }
-        return JSON.stringify({status: 'playing', persistent_id: ids[0], track_count: ids.length, from_start: true, playlist_id: playlistID, following_ids: request.native_queue ? [] : followingIDs, album_ids: ids, pending_queue_ids: request.native_queue ? fullIDs.slice(1) : []});
+        return JSON.stringify({status: 'playing', persistent_id: ids[0], track_count: ids.length, from_start: true, playlist_id: playlistID, following_ids: followingIDs, album_ids: ids});
     } finally {
         if (!started) {
             if (modesChanged) { music.shuffleEnabled = previousShuffle;music.songRepeat = previousRepeat; }

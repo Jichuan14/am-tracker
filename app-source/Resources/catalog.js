@@ -47,7 +47,8 @@ function run(argv) {
             if (embedded && known && embedded!==known) return {index:index,status:'identity_conflict'};
             var catalog=embedded||known;
             if (catalog) resolved++;
-            return {index:index,status:catalog?'resolved':'no_catalog_id',persistent_id:request.ids[i],catalog_id:catalog};
+            return {index:index,status:catalog?'resolved':'no_catalog_id',persistent_id:request.ids[i],catalog_id:catalog,
+                title:matches[0].name(),artist:matches[0].artist(),album:matches[0].album(),duration:matches[0].duration()};
         }
         return {index:index,status:'not_found'};
     });

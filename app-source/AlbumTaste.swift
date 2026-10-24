@@ -55,9 +55,12 @@ extension Archive {
     func undoRecommendationFeedback() throws {
         try exec("DELETE FROM recommendation_feedback WHERE id=(SELECT MAX(id) FROM recommendation_feedback)")
     }
-    func recommendationFeedback(now:Date) throws -> [String:RecommendationFeedback] {
+    func recommendationFeedback(now:Date,targets:Set<String>?=nil) throws -> [String:RecommendationFeedback] {
         var result:[String:RecommendationFeedback]=[:]
-        for row in try rows("SELECT * FROM recommendation_feedback ORDER BY id") {
+        let ids=targets.map{Array($0).sorted()}
+        if ids?.isEmpty == true { return result }
+        let filter=ids.map{" WHERE target_id IN ("+Array(repeating:"?",count:$0.count).joined(separator:",")+")"} ?? ""
+        for row in try rows("SELECT * FROM recommendation_feedback"+filter+" ORDER BY id",ids?.map{$0 as Any?} ?? []) {
             guard let id=row["target_id"],let kind=row["kind"],let date=parsedDate(row["created_at"]),date<=now else { continue }
             var state=result[id] ?? RecommendationFeedback()
             if kind.hasPrefix("mode_") {

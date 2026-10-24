@@ -1,0 +1,52 @@
+AM Track beta for Apple Silicon Macs
+Requires macOS 13 or later and the macOS Music app.
+
+INSTALL
+1. Unzip the download and move AM Track.app to Applications.
+2. Open AM Track. This beta is not signed with an Apple Developer ID or
+   notarized by Apple, so macOS may block its first launch.
+3. If you trust this download, open System Settings > Privacy & Security,
+   find the blocked-app message for AM Track, and choose Open Anyway.
+   Follow the confirmation prompts, then open the app again if needed.
+
+Apple's instructions: https://support.apple.com/102445
+
+FIRST LAUNCH
+Open Music, then choose Enable recording in AM Track's setup screen.
+Allow AM Track to control Music when macOS asks. If access was denied,
+use Open Automation settings in AM Track, then enable Music access under
+System Settings > Privacy & Security > Automation.
+
+Enable recording starts collecting your own library metadata and future
+listening on this Mac. Not now leaves Music access and recording off.
+Play a song in Music to begin building history. Recommendations may need
+library metadata, play counts, or more listening before anything appears.
+Music's library must contain saved songs for library recommendations.
+
+EVERYDAY USE
+The menu bar shows On or Off. Start/Stop recording controls new history
+entries. Library details and playback controls can still refresh after
+you stop recording, once you have enabled Music access.
+Closing the window keeps the app running. Quit stops it. Your recording
+choice is remembered when you reopen AM Track. No login item is installed.
+History.dat imports are optional and run only when explicitly requested.
+
+YOUR DATA
+New installations store data in:
+~/Library/Application Support/AM Track/
+Use Open data folder to see the active location. An existing database
+beside the app, or a previously selected data folder, may be used instead.
+History, library metadata, ratings, backups, and bounded queue diagnostics
+stay local. AM Track does not upload them or send analytics.
+The Music app itself may contact Apple's services for playback.
+Export history creates a CSV that can contain private listening data.
+Keep that file and the data folder private. Quit AM Track before backing
+up its data. Updating the app does not replace the data folder.
+
+LIMITATIONS
+This download supports Apple Silicon only; Intel Macs are not supported.
+Recording requires AM Track to be running while the Mac is awake and
+observes Music playback on this Mac. It does not collect iPhone activity.
+Queue additions rely on a private macOS interface and verified catalog
+IDs; availability can vary by macOS version and track. A queue error does
+not mean recording has stopped. You can continue playback in Music.

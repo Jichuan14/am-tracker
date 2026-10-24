@@ -7,6 +7,7 @@ import Foundation
     let fixture:[String:Any] = ["version":1,"items":["iar":[["pm":["name":"Manual song","contentDesc":["identifiers":["storeAdamID":"1234"]]]]]]]
     try PropertyListSerialization.data(fromPropertyList:fixture,format:.xml,options:0).write(to:folder.appendingPathComponent("History.dat"))
     let model=try Model(folder:folder)
+    try model.allowCollection(recordOnLaunch:false)
     try check(!model.historyBusy,"startup must not request a History.dat read")
     try check(try model.archive.rows("SELECT * FROM history_checks").isEmpty,"startup must not create a history check")
     model.checkHistory()
@@ -25,13 +26,14 @@ private func check(_ condition:Bool,_ message:String) throws {
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-refresh-"+UUID().uuidString)
     defer { try? FileManager.default.removeItem(at:folder) }
     let model=try Model(folder:folder),now=Date()
+    try model.allowCollection(recordOnLaunch:false)
     let library=(1...16).map { n -> [String:Any] in
         ["persistent_id":String(format:"%016X",n),"title":"Refresh song \(n)","artist":"Artist \(n)",
          "album_artist":"Artist \(n)","album":"Album \(n)","genre":"Pop","duration":180,
          "play_count":20,"last_played":stamp(now.addingTimeInterval(-20*86400)),
          "disc_number":1,"disc_count":1,"track_number":1,"track_count":1]
     }
-    try model.archive.ingestLibrary(["running":true,"tracks":library]);model.refreshSuggestions()
+    try model.archive.ingestLibrary(["running":true,"tracks":library]);model.refreshSuggestions(background:false)
     let initial=model.suggestions
     let all=try model.archive.recommendations(limit:100)
     let outside=all.first { candidate in !initial.contains{$0.id==candidate.id} }!
@@ -47,7 +49,7 @@ private func check(_ condition:Bool,_ message:String) throws {
     try check(less.contains { song in liked.first{$0.id==song.id}.map{song.score<$0.score} ?? false },"less-like outside For you also lowers scores for similar music")
     model.undoFeedback()
     try check(try model.archive.recommendationFeedback(now:Date())[outside.id]?.liked==true,"undo restores the external song's like")
-    let selected=model.suggestions.first!,ids=try model.archive.playbackIDs(for:selected.id)
+    let selected=model.suggestions.first{$0.id != outside.id}!,ids=try model.archive.playbackIDs(for:selected.id)
     let before=model.suggestions.map{$0.id}
     let ratingsBefore=try model.archive.rows("SELECT * FROM recommendation_feedback").count
     var rejected=false
@@ -56,25 +58,29 @@ private func check(_ condition:Bool,_ message:String) throws {
     try check(try model.archive.forYouPlaybackCooldowns().isEmpty,"failed playback creates no cooldown")
     try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==ratingsBefore,"failed playback never creates an automatic Like")
     try model.completeForYouPlayback(selected,response:["status":"playing","persistent_id":ids[0]],requestedIDs:ids)
-    let automaticLike=try model.archive.rows("SELECT * FROM recommendation_feedback ORDER BY id DESC LIMIT 1").first!
-    try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==ratingsBefore+1 && automaticLike["target_id"]==selected.id && automaticLike["kind"]=="like","a confirmed manual song selection automatically Likes that exact song")
-    try check(!model.recording && model.suggestions.count==10 && !model.suggestions.contains{$0.id==selected.id},"confirmed playback immediately replaces the selected song with recording off")
+    try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==ratingsBefore && model.archive.recommendationFeedback(now:Date())[selected.id]?.liked != true,"accepting a recommendation never creates a Like or upgrades it to an explicit preference")
+    let refreshDeadline=Date().addingTimeInterval(5)
+    while model.suggestions.contains(where:{$0.id==selected.id}) && Date()<refreshDeadline { RunLoop.current.run(until:Date().addingTimeInterval(0.005)) }
+    try check(!model.recording && model.suggestions.count==10 && !model.suggestions.contains{$0.id==selected.id},"confirmed playback asynchronously replaces the selected song with recording off")
     model.nextRecommendations = .distantPast;model.reload()
     try check(!model.suggestions.contains{$0.id==selected.id},"later reloads cannot restore a cooling selection")
     let reopened=try Archive(folder:folder)
     try check(try !reopened.recommendations(limit:100).contains{$0.id==selected.id},"selection cooldown survives reopening the archive")
     try check(try reopened.recommendations(now:now.addingTimeInterval(86405),limit:100).contains{$0.id==selected.id},"selection cooldown expires after 24 hours")
+    model.rate(selected.id,"like")
+    try check(try model.archive.recommendationFeedback(now:Date())[selected.id]?.liked==true,"a deliberate Like still records a strong preference")
     model.undoFeedback()
-    try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==ratingsBefore,"automatic Like can be undone with the existing feedback action")
+    try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==ratingsBefore,"a deliberate Like remains undoable")
     try check(try model.archive.rows("SELECT * FROM sessions").isEmpty && model.archive.unifiedRows().isEmpty,"feedback and confirmed starts do not invent listening history")
     print("PASS: off-list feedback changes ranking; confirmed playback refreshes and refills For you, failures preserve it, cooldown persists/expires, no fabricated history.")
 }
 
 @MainActor func musicQueueTests() throws {
     let a="0000000000000001",b="0000000000000002",requests:[[String:Any]]=[["ids":[a]],["ids":[b]]]
-    let response:[String:Any]=["status":"resolved","tracks":[["index":0,"status":"no_catalog_id"],["index":1,"status":"resolved","persistent_id":b,"catalog_id":"1234567890"]]]
+    let response:[String:Any]=["status":"resolved","tracks":[["index":0,"status":"no_catalog_id"],["index":1,"status":"resolved","persistent_id":b,"catalog_id":"1234567890","title":"Mapped song","artist":"Mapped artist","album":"Mapped album","duration":180]]]
     let mapped=try resolvedQueueSongs(response,requests:requests)
     try check(mapped.count==1 && mapped[0].index==1 && mapped[0].persistentID==b,"catalog mapping skips unsupported songs while retaining exact input identity")
+    try check(mapped[0].metadata?.title=="Mapped song" && mapped[0].metadata?.duration==180,"verified library metadata survives catalog resolution for playback recognition")
     for bad:[String:Any] in [
         ["status":"resolved","tracks":[["index":0,"status":"resolved","persistent_id":b,"catalog_id":"1234567890"],["index":1,"status":"not_found"]]],
         ["status":"resolved","tracks":[["index":1,"status":"not_found"],["index":0,"status":"not_found"]]]
@@ -96,6 +102,7 @@ private func check(_ condition:Bool,_ message:String) throws {
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-background-batch-"+UUID().uuidString)
     defer { try? FileManager.default.removeItem(at:folder) }
     let model=try Model(folder:folder);model.menuSongBusy=true
+    try model.allowCollection(recordOnLaunch:false)
     for n in 1...16 {
         var song=ImportedSong(title:"Background \(n)");song.persistentID=String(format:"%016X",n)
         let id=try model.archive.resolve(song);try model.archive.feedback(id,"like")
@@ -111,13 +118,14 @@ private func check(_ condition:Bool,_ message:String) throws {
     let feedback=try model.archive.rows("SELECT * FROM recommendation_feedback").count
     model.nextForYou()
     var deadline=Date().addingTimeInterval(5)
-    while model.playbackTrackID != nil && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
-    try check(appended==["2","3","4","5","6"] && model.playedForYouIDs.count==5 && model.automaticQueue.enabled,"five mapped songs append sequentially, skip unsupported items and start monitoring without Accessibility")
+    while (model.playbackTrackID != nil || (model.automaticPreparationBusy || model.automaticRankingBusy || model.automaticRankingScheduled)) && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
+    try check(appended==["2"] && model.playedForYouIDs.count==1 && model.automaticQueue.enabled,"one mapped song is queued while future IDs are prepared without submitting them")
+    model.stopAutomaticQueue()
     var attempts=0
-    model.queueAppendOverride={_ in attempts += 1;if attempts==3 { throw AppError(message:"Native append rejected") };return 1}
+    model.queueAppendOverride={_ in attempts += 1;throw AppError(message:"Native append rejected")}
     model.nextForYou();deadline=Date().addingTimeInterval(5)
-    while model.playbackTrackID != nil && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
-    try check(attempts==3 && model.playedForYouIDs.count==7 && !model.automaticQueue.enabled && model.playbackMessage.contains("Added 2") && model.playbackError.contains("Native append rejected"),"partial background batch cools exactly its accepted prefix and never retries ambiguous additions")
+    while ((model.automaticPreparationBusy || model.automaticRankingBusy || model.automaticRankingScheduled) || model.playbackTrackID != nil) && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
+    try check(attempts==1 && model.playedForYouIDs.count==1 && !model.automaticQueue.enabled && model.playbackError.contains("Native append rejected"),"an unconfirmed next song stops the chain without cooldowns or retries")
     try check(try model.archive.rows("SELECT * FROM recommendation_feedback").count==feedback && model.archive.rows("SELECT * FROM sessions").isEmpty,"background batches invent no Likes or listening history")
     print("PASS: exact library/catalog mapping, unsupported-item skips, strict backend acknowledgements and fail-closed timeouts.")
 }
@@ -385,16 +393,22 @@ func maintenance(_ folder:URL) throws {
     try expect(queue.pendingReplacements==1,"repeated observations cannot count the same transition twice")
     queue.start(queued:[[b],[c],[d]],currentID:a)
     queue.observe(sample(d))
-    try expect(queue.pendingReplacements==3 && queue.songs.count==1,"multiple skipped known songs between polls are accounted once")
+    try expect(queue.pendingReplacements==1 && queue.songs.count==3,"one observed transition cannot infer a burst from queue order")
+    queue.pendingReplacements=0
+    queue.append([["0000000000000005"]])
+    for position in [2.0,20.0,40.0,60.0] { queue.observe(sample(d,position)) }
+    try expect(queue.pendingReplacements==0,"same song after refill cannot schedule further additions")
     queue.start(queued:[[c],[d]],albumIDs:[a,b])
     queue.observe(sample(a));queue.observe(sample(b));queue.observe(sample(b,170))
     try expect(queue.waitingForAlbum && queue.pendingReplacements==0,"album track changes and skips never refill")
     queue.observe(sample(c))
-    try expect(!queue.waitingForAlbum && queue.pendingReplacements==0,"entering the first follow-up ends album waiting without adding a song")
+    try expect(!queue.waitingForAlbum && queue.pendingReplacements==1,"entering the first follow-up requests the single next song")
+    queue.pendingReplacements=0
+    try expect(!queue.waitingForAlbum,"album gate is released")
     queue.observe(sample(c,2));queue.observe(sample(d))
     try expect(queue.pendingReplacements==1,"leaving an album follow-up refills even after a short skip")
     queue.start(queued:[[c],[d]],albumIDs:[a,b]);queue.observe(sample(d))
-    try expect(queue.pendingReplacements==1,"a skipped first follow-up missed between polls is replenished")
+    try expect(queue.pendingReplacements==1,"first observed album follow-up creates only one next-song request")
     queue.start(queued:[[c]],currentID:a);queue.observe(sample(b))
     try expect(queue.enabled && queue.pendingReplacements==0,"pre-existing queued music does not cancel monitoring or trigger additions")
     queue.observe(sample(c))
@@ -404,9 +418,43 @@ func maintenance(_ folder:URL) throws {
     queue.observe(Sample(["running":false]))
     try expect(!queue.enabled && queue.pendingReplacements==0,"closing Music stops automatic queueing")
 
+    // Regression: the catalog queue creates URL tracks with IDs unlike library IDs.
+    let romeo="A000000000000001",blood="A000000000000002"
+    let romeoInfo=QueueSongMetadata(title:"Romeo and Juliet",artist:"Dire Straits",album:"Making Movies",duration:361.394989)
+    let bloodInfo=QueueSongMetadata(title:"bloodonmyhands (feat. Flo Milli)",artist:"Tate McRae",album:"So Close To What",duration:162.447006)
+    let entries=[CatalogQueueSong(index:0,persistentID:romeo,catalogID:"1",metadata:romeoInfo),CatalogQueueSong(index:1,persistentID:blood,catalogID:"2",metadata:bloodInfo)]
+    func catalogSample(_ id:String,_ info:QueueSongMetadata,_ state:String="playing",_ kind:String="urlTrack") -> Sample {
+        Sample(["running":true,"state":state,"persistent_id":id,"title":info.title,"artist":info.artist,"album":info.album,"duration":info.duration-0.05,"track_class":kind])
+    }
+    queue.start(queued:[[romeo],[blood]],currentID:a);queue.register(entries)
+    queue.observe(catalogSample("B000000000000001",romeoInfo))
+    try expect(queue.pendingReplacements==1,"catalog playback ID must recognize the first queued library song")
+    queue.pendingReplacements=0
+    queue.observe(catalogSample("B000000000000001",romeoInfo))
+    queue.observe(catalogSample("B000000000000002",bloodInfo,"paused"))
+    try expect(queue.pendingReplacements==0,"catalog identity repeated polls and pauses are stable")
+    queue.observe(catalogSample("B000000000000002",bloodInfo))
+    try expect(queue.pendingReplacements==1,"a second catalog song finish/skip replenishes again")
+    queue.start(queued:[[blood]],albumIDs:[a,romeo]);queue.register(entries)
+    queue.observe(catalogSample("B000000000000001",romeoInfo))
+    try expect(queue.waitingForAlbum && queue.pendingReplacements==0,"catalog album track retains album gating")
+    queue.observe(catalogSample("B000000000000002",bloodInfo))
+    try expect(!queue.waitingForAlbum && queue.pendingReplacements==1,"first catalog follow-up releases album gate and requests one next song")
+    queue.start(queued:[[romeo],[blood]],currentID:a);queue.register(entries)
+    queue.observe(catalogSample("B000000000000001",romeoInfo,"playing","fileTrack"))
+    queue.observe(catalogSample("B000000000000001",QueueSongMetadata(title:romeoInfo.title,artist:"Other artist",album:romeoInfo.album,duration:romeoInfo.duration)))
+    queue.observe(catalogSample("B000000000000001",QueueSongMetadata(title:romeoInfo.title,artist:romeoInfo.artist,album:romeoInfo.album,duration:500)))
+    try expect(queue.pendingReplacements==0,"unrelated library versions, artist and duration mismatches cannot trigger fallback")
+    queue.start(queued:[[romeo],[blood]],currentID:a)
+    queue.register([entries[0],CatalogQueueSong(index:1,persistentID:blood,catalogID:"2",metadata:romeoInfo)])
+    queue.observe(catalogSample("B000000000000001",romeoInfo))
+    try expect(queue.pendingReplacements==0,"ambiguous metadata cannot advance the queue")
+    print("PASS: real catalog/library ID mismatch, repeated finish/skip refill, album identities and conservative fallback guards.")
+
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-continuous-"+UUID().uuidString)
     defer { try? FileManager.default.removeItem(at:folder) }
     let model=try Model(folder:folder)
+    try model.allowCollection(recordOnLaunch:false)
     for n in 1...18 {
         var song=ImportedSong(title:"Continuous \(n)");song.persistentID=String(format:"%016X",n)
         let id=try model.archive.resolve(song);try model.archive.feedback(id,"like")
@@ -428,7 +476,7 @@ func maintenance(_ folder:URL) throws {
     model.menuSample=sample(b)
     model.observeAutomaticQueue(sample(b))
     let deadline=Date().addingTimeInterval(5)
-    while model.playbackTrackID != nil && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
+    while (model.playbackTrackID != nil || (model.automaticPreparationBusy || model.automaticRankingBusy || model.automaticRankingScheduled)) && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
     try expect(!model.recording && additions==1 && model.automaticQueue.enabled,"recording-off monitor appends exactly one replacement through the existing queue path")
     try expect(model.automaticQueue.pendingReplacements==0,"confirmed transition debt is cleared")
     let baselineID=try model.archive.rows("SELECT track_id FROM track_aliases WHERE value=?",[a]).first!["track_id"]!
@@ -438,8 +486,31 @@ func maintenance(_ folder:URL) throws {
     model.queueAppendOverride={_ in throw AppError(message:"Queue unavailable")}
     model.observeAutomaticQueue(sample(c))
     let failureDeadline=Date().addingTimeInterval(5)
-    while model.playbackTrackID != nil && Date()<failureDeadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
+    while (model.playbackTrackID != nil || (model.automaticPreparationBusy || model.automaticRankingBusy || model.automaticRankingScheduled)) && Date()<failureDeadline { RunLoop.current.run(until:Date().addingTimeInterval(0.01)) }
     try expect(!model.automaticQueue.enabled && model.playbackError.contains("Queue unavailable"),"queue failure stops automatic retries and exposes the error")
     try expect(try model.archive.rows("SELECT * FROM recommendation_feedback").count==count && model.archive.rows("SELECT * FROM sessions").isEmpty,"replacements create no Likes or listening history")
     print("PASS: automatic queue finishes/skips, album gating, pause/seek stability, catch-up, recording-off refill, serialized work, failures and no invented history.")
+}
+
+@MainActor func onboardingTests() throws {
+    let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-onboarding-"+UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:folder) }
+    let model=try Model(folder:folder)
+    try check(model.showSetup && !model.collectionEnabled && !model.resumeRecordingOnLaunch,"new users see setup with collection and resume disabled")
+    model.showSetup=false
+    model.refreshLibraryDetails(force:true);model.refreshMenuSong();model.start();model.checkHistory()
+    try check(!model.recording && !model.libraryDetailsBusy && !model.menuSongBusy && !model.historyBusy && model.showSetup,"no Music reads or history imports begin before consent, including after Not now")
+    try check(try model.archive.rows("SELECT * FROM sessions").isEmpty && model.archive.rows("SELECT * FROM library_tracks").isEmpty,"fresh installations contain no listening or library data")
+    try model.allowCollection(recordOnLaunch:true)
+    try check(model.collectionEnabled && !model.showSetup && model.resumeRecordingOnLaunch,"explicit consent enables collection and remembers recording choice")
+    try check(try model.archive.rows("SELECT * FROM sessions").isEmpty,"consent alone never fabricates listening history")
+    let stored=try Archive(folder:folder)
+    try check(try stored.value("collection_consent")=="yes" && stored.value("record_on_launch")=="yes","consent and recording choice persist across archive reopen")
+    // Exercise shutdown persistence without running a live Music query.
+    model.recording=true;model.stop(remember:false)
+    try check(model.resumeRecordingOnLaunch,"quitting preserves the user's enabled recording choice")
+    model.recording=true;model.stop()
+    try check(!model.resumeRecordingOnLaunch && model.collectionEnabled,"explicit Stop is remembered while library access remains enabled")
+    try check(try stored.rows("SELECT * FROM sessions").isEmpty,"shutdown and setup do not create listening events")
+    print("PASS: first-launch consent, Not now, no pre-consent Music reads, empty archive, persisted choices, quit versus Stop and no fabricated events.")
 }

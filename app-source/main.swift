@@ -182,6 +182,10 @@ final class QueryControl {
     private let lock=NSLock()
     private var cancelled=false
     private var current: Process?
+    func checkCancellation() throws {
+        lock.lock();defer{lock.unlock()}
+        guard !cancelled else { throw AppError(message:"Playback preparation cancelled.") }
+    }
     func launch(_ process:Process) throws {
         lock.lock();defer { lock.unlock() }
         guard !cancelled else { throw AppError(message:"Recording stopped.") }
@@ -207,6 +211,8 @@ func displayDate(_ string: String?) -> String {
     let lease:ArchiveLease
     let archive: Archive
     @Published var recording = false
+    @Published var collectionEnabled = false
+    @Published var showSetup = false
     @Published var sample: Sample?
     @Published var error = ""
     @Published var history:[HistoryRow]=[]
@@ -242,15 +248,43 @@ func displayDate(_ string: String?) -> String {
     let queryQueue = DispatchQueue(label:"org.amtrack.app.queries",qos:.utility)
     let playbackQueue = DispatchQueue(label:"org.amtrack.app.playback",qos:.userInitiated)
     let playbackControl=QueryControl()
+    var playbackSelectionControl=QueryControl()
     let menuSongControl=QueryControl()
     let menuSongQueue=DispatchQueue(label:"org.amtrack.app.menu-song",qos:.utility)
     var menuSongBusy=false
+    var menuSongPending=false
+    var menuSongRequest=0
+    var playbackReadOverride:(() throws -> [String:Any])?
+    lazy var queueLatency=QueueLatencyTrace(folder:archive.folder)
+    let suggestionQueue=DispatchQueue(label:"org.amtrack.app.suggestions",qos:.utility)
+    var suggestionRequest=0
     var playedForYouIDs=Set<String>()
     @Published var automaticQueue=AutomaticQueue()
     var automaticQueueEpoch=0
+    var playbackSelectionRequest=0
+    var preparedAutomaticSongs:[PreparedAutomaticSong]=[]
+    var automaticPreparationBusy=false
+    var automaticPreparationRequest=0
+    var automaticInsertionRequest=0
+    var automaticActiveInsertion:Int?
+    var automaticInFlight:PreparedAutomaticSong?
+    var automaticDeferredSample:Sample?
+    var automaticCandidates:[AutomaticCandidate]=[]
+    var automaticResolvingCandidates:[AutomaticCandidate]=[]
+    var automaticExcludedIDs=Set<String>()
+    var automaticRankingBusy=false
+    var automaticRankingScheduled=false
+    var automaticRankingRequest=0
+    var automaticRankingError=""
+    let automaticRankingQueue=DispatchQueue(label:"org.amtrack.app.rank-next-batch",qos:.utility)
+    var automaticScoreOverride:((RecommendationSnapshot)->[Recommendation])?
+    var automaticPreparationError=""
+    var automaticPreparationControl=QueryControl()
+    let automaticPreparationQueue=DispatchQueue(label:"org.amtrack.app.prepare-next",qos:.utility)
     // Overrides are used only by isolated tests; production uses Music's native queue.
     var catalogResolveOverride:(([[String:Any]]) throws -> [CatalogQueueSong])?
     var queueAppendOverride:(([String:Any]) throws -> Int)?
+    var playbackStartOverride:(([String:Any]) throws -> [String:Any])?
     let libraryDetailsControl=QueryControl()
     var nextLibraryDetails=Date.distantPast
     init(folder: URL) throws {
@@ -262,6 +296,8 @@ func displayDate(_ string: String?) -> String {
         let report=try archive.audit(full:true)
         guard report["database_ok"] as? Bool==true else { throw AppError(message:"Database checks failed. See database-health.json; recording has not started.") }
         databaseStatus="Database checks passed"
+        collectionEnabled = try archive.value("collection_consent") == "yes"
+        showSetup = !collectionEnabled
         if try archive.value("history_source_path").isEmpty {
             try archive.meta("history_source_path",folder.appendingPathComponent("History.dat").path)
         }
@@ -270,7 +306,29 @@ func displayDate(_ string: String?) -> String {
         nextAudit=Date().addingTimeInterval(300)
         reload()
     }
+    var resumeRecordingOnLaunch:Bool {
+        collectionEnabled && (try? archive.value("record_on_launch")) == "yes"
+    }
+    @discardableResult func requireCollectionConsent() -> Bool {
+        guard collectionEnabled else { showSetup=true;onChange?();return false }
+        return true
+    }
+    func allowCollection(recordOnLaunch:Bool) throws {
+        try archive.transaction {
+            try archive.meta("collection_consent","yes")
+            try archive.meta("record_on_launch",recordOnLaunch ? "yes" : "no")
+        }
+        collectionEnabled=true;showSetup=false;onChange?()
+    }
+    func finishSetup() {
+        do { try allowCollection(recordOnLaunch:true);start() }
+        catch { self.error=error.localizedDescription }
+    }
+    func openAutomationSettings() {
+        if let url=URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") { NSWorkspace.shared.open(url) }
+    }
     var status: String {
+        if !collectionEnabled { return "Music access is not enabled" }
         if !recording { return "Recording is off" }
         if !error.isEmpty { return "Needs attention" }
         guard let sample else { return "Connecting to Music" }
@@ -291,15 +349,15 @@ func displayDate(_ string: String?) -> String {
             historyStatus=try archive.value("history_detail")
             historyChecked=displayDate(try archive.value("history_last_check"))
             if Date()>=nextRecommendations {
-                suggestions=try archive.recommendations();nextRecommendations=Date().addingTimeInterval(30)
-                try updateAlbumOptions()
+                refreshSuggestions(background:true,log:false)
             }
         } catch { self.error = error.localizedDescription }
         onChange?()
     }
     func start() {
-        guard !recording else { return }
+        guard requireCollectionConsent(),!recording else { return }
         do {
+            try archive.meta("record_on_launch","yes")
             recorder = try Recorder(archive)
             try archive.meta("recorder_state","running"); try archive.meta("recorder_pid",String(getpid()))
             error=""; recording=true; generation += 1; nextLibrary = .distantPast; nextExport = .distantPast;queryControl=QueryControl()
@@ -310,8 +368,9 @@ func displayDate(_ string: String?) -> String {
             poll(); onChange?()
         } catch { self.error=error.localizedDescription; onChange?() }
     }
-    func stop() {
+    func stop(remember:Bool=true) {
         guard recording else { return }
+        if remember { try? archive.meta("record_on_launch","no") }
         timer?.invalidate();timer=nil; recording=false; generation += 1;queryControl.cancel()
         do {
             try recorder?.finish("recorder_stopped")
@@ -320,6 +379,7 @@ func displayDate(_ string: String?) -> String {
         recorder=nil; sample=nil; reload()
     }
     func chooseHistory() {
+        guard requireCollectionConsent() else { return }
         let panel=NSOpenPanel();panel.title="Choose Music’s live History.dat"
         panel.message="Select History.dat for an optional check against recorded history. It is read only when you request a check. A copied file can also be checked."
         panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.treatsFilePackagesAsDirectories=true
@@ -342,6 +402,7 @@ func displayDate(_ string: String?) -> String {
         return URL(fileURLWithPath:historySource)
     }
     func checkHistory() {
+        guard requireCollectionConsent() else { return }
         guard !historyBusy else { return }
         historyBusy=true;let source=sourceURL(),token=historyGeneration
         queryQueue.async {
@@ -375,9 +436,26 @@ func displayDate(_ string: String?) -> String {
             } catch { self.databaseStatus="Database check failed";self.error=error.localizedDescription;self.stop() }
         }
     }
-    func refreshSuggestions() {
-        do { suggestions=try archive.recommendations(log:true);nextRecommendations=Date().addingTimeInterval(30);try updateAlbumOptions() }
-        catch { self.error=error.localizedDescription }
+    func refreshSuggestions(background:Bool=true,log:Bool=true) {
+        suggestionRequest += 1
+        let request=suggestionRequest
+        do {
+            if !background {
+                suggestions=try archive.recommendations(log:log);nextRecommendations=Date().addingTimeInterval(30);try updateAlbumOptions();return
+            }
+            let snapshot=try archive.recommendationSnapshot()
+            try updateAlbumOptions()
+            nextRecommendations=Date().addingTimeInterval(30)
+            suggestionQueue.async {
+                let result=snapshot.scored()
+                DispatchQueue.main.async {
+                    guard request==self.suggestionRequest else { return }
+                    self.suggestions=result
+                    do { if log { try self.archive.logRecommendations(result) } } catch { self.error=error.localizedDescription }
+                    self.onChange?()
+                }
+            }
+        } catch { self.error=error.localizedDescription }
     }
     func updateAlbumOptions() throws {
         albumOptions=try archive.albumCollections()
@@ -388,7 +466,7 @@ func displayDate(_ string: String?) -> String {
         rate(id,mode == .automatic ? "mode_auto" : mode == .album ? "mode_album" : "mode_tracks")
     }
     func refreshLibraryDetails(force:Bool=false) {
-        guard !libraryDetailsBusy,!recording,(force || Date()>=nextLibraryDetails) else { return }
+        guard collectionEnabled,!libraryDetailsBusy,!recording,(force || Date()>=nextLibraryDetails) else { return }
         libraryDetailsBusy=true;libraryDetailsError=""
         let control=libraryDetailsControl
         queryQueue.async {
@@ -418,17 +496,32 @@ func displayDate(_ string: String?) -> String {
         do { try archive.undoRecommendationFeedback();refreshSuggestions() }
         catch { self.error=error.localizedDescription }
     }
-    func refreshMenuSong() {
-        guard !menuSongBusy else { return };menuSongBusy=true
-        let control=menuSongControl,epoch=automaticQueueEpoch
+    func refreshMenuSong(notification:Bool=false) {
+        guard collectionEnabled else { return }
+        let epoch=automaticQueueEpoch
+        if menuSongBusy {
+            menuSongPending=true
+            queueLatency.record("read_coalesced",epoch:epoch,request:menuSongRequest)
+            return
+        }
+        menuSongBusy=true;menuSongPending=false;menuSongRequest += 1
+        let request=menuSongRequest,control=menuSongControl,override=playbackReadOverride
+        let trace=queueLatency,start=QueueLatencyTrace.now()
+        trace.record(notification ? "notification_read" : "poll_read",epoch:epoch,request:request)
         menuSongQueue.async {
-            let result=Result { Sample(try Self.query("sample",control:control)) }
+            let result=Result { Sample(try override?() ?? Self.query("playback",control:control)) }
+            trace.record("read_complete",epoch:epoch,request:request,since:start)
             DispatchQueue.main.async {
+                guard request==self.menuSongRequest else { return }
                 self.menuSongBusy=false
-                if let current=try? result.get() {
+                if epoch==self.automaticQueueEpoch,let current=try? result.get() {
                     self.menuSample=current
-                    if epoch==self.automaticQueueEpoch { self.observeAutomaticQueue(current) }
-                }
+                    self.observeAutomaticQueue(current)
+                } else if epoch != self.automaticQueueEpoch { self.menuSongPending=true }
+                // A notification received while reading is never lost behind the poll timer.
+                let trailing=self.menuSongPending
+                self.menuSongPending=false
+                if trailing { self.refreshMenuSong() }
                 self.onChange?()
             }
         }
@@ -440,80 +533,15 @@ func displayDate(_ string: String?) -> String {
         } catch { playbackError=error.localizedDescription }
         onChange?()
     }
-    func nextForYou() {
-        guard playbackTrackID == nil else { return }
-        playbackMessage="";playbackError=""
-        addAutomaticSongs()
-    }
-    func stopAutomaticQueue() {
-        automaticQueueEpoch += 1;automaticQueue.stop()
-        playbackMessage="Automatic queue stopped. Songs already queued will keep playing."
-        onChange?()
-    }
-    func observeAutomaticQueue(_ current:Sample) {
-        guard playbackTrackID == nil else { return }
-        automaticQueue.observe(current)
-        replenishAutomaticQueue()
-    }
-    func replenishAutomaticQueue() {
-        guard automaticQueue.enabled,!automaticQueue.waitingForAlbum,
-              automaticQueue.pendingReplacements>0,playbackTrackID == nil else { return }
-        automaticQueue.pendingReplacements -= 1
-        addAutomaticSongs(limit:1,replenishing:true)
-    }
-    func addAutomaticSongs(limit:Int=5,replenishing:Bool=false) {
-        do {
-            let candidates=try archive.automaticQueueSongs(excluding:playedForYouIDs,currentPersistentID:menuSample?.musicPersistentID,limit:100,excludingPersistentIDs:automaticQueue.knownIDs)
-            let requests=try candidates.map{try archive.queueRequest(for:$0.id)}
-            guard !requests.isEmpty else { throw AppError(message:"No more eligible songs are available for the automatic queue.") }
-            let control=playbackControl,prefix=replenishing ? "" : playbackMessage
-            let epoch=automaticQueueEpoch,baseline=menuSample?.musicPersistentID
-            let appendOverride=queueAppendOverride,resolveOverride=catalogResolveOverride
-            playbackTrackID=candidates[0].id;onChange?()
-            playbackQueue.async {
-                var selected:[CatalogQueueSong]=[],added=0,failure:String?
-                do {
-                    if let resolveOverride { selected=Array(try resolveOverride(requests).prefix(limit)) }
-                    else {
-                        let argument=String(decoding:try JSONSerialization.data(withJSONObject:requests),as:UTF8.self)
-                        selected=Array(try resolvedQueueSongs(Self.query("catalog",control:control,arguments:[argument,String(limit)]),requests:requests).prefix(limit))
-                    }
-                    guard !selected.isEmpty else { throw AppError(message:"These recommendations have no verified Apple Music catalog IDs. Refresh the library or download the songs in Music before trying again.") }
-                    for entry in selected {
-                        if let appendOverride { _=try appendOverride(["catalog_id":entry.catalogID]) }
-                        else { try MusicQueue.append(catalogID:entry.catalogID,control:control) }
-                        added += 1
-                    }
-                } catch { failure=error.localizedDescription }
-                let chosen=selected,completed=added,problem=failure
-                DispatchQueue.main.async {
-                    self.playbackTrackID=nil
-                    do {
-                        let songs=chosen.map{candidates[$0.index]}
-                        try self.completeAutomaticQueue(songs,addedCount:completed,prefix:prefix)
-                        if epoch==self.automaticQueueEpoch {
-                            let queued=chosen.prefix(completed).map{[$0.persistentID]}
-                            if !self.automaticQueue.enabled && !replenishing && completed>0 {
-                                self.automaticQueue.start(queued:queued,currentID:baseline)
-                            } else if self.automaticQueue.enabled { self.automaticQueue.append(queued) }
-                            if problem != nil { self.automaticQueue.stop() }
-                        }
-                    } catch { self.error=error.localizedDescription;self.automaticQueue.stop() }
-                    if let problem { self.playbackError=problem }
-                    self.onChange?();self.replenishAutomaticQueue();self.refreshMenuSong()
-                }
-            }
-        } catch { playbackTrackID=nil;playbackError=error.localizedDescription;automaticQueue.stop();onChange?() }
-    }
-    func completeAutomaticQueue(_ songs:[Recommendation],addedCount:Int,prefix:String="") throws {
+    func completeAutomaticQueue(_ songs:[Recommendation],addedCount:Int,prefix:String="",refresh:Bool=true) throws {
         guard addedCount>=0,addedCount<=songs.count,songs.allSatisfy({$0.kind == .song}) else {
             throw AppError(message:"Music returned an invalid automatic queue result.")
         }
         let added=Array(songs.prefix(addedCount))
         try archive.rememberForYouSelections(Set(added.flatMap{$0.trackIDs}))
         playedForYouIDs.formUnion(added.map{$0.id})
-        playbackMessage=prefix+(prefix.isEmpty ? "" : " ")+"Added \(addedCount) recommended song\(addedCount == 1 ? "" : "s") to the end of the queue."
-        refreshSuggestions()
+        playbackMessage=prefix+(prefix.isEmpty ? "" : " ")+"Queued \(addedCount) recommended song\(addedCount == 1 ? "" : "s") next."
+        if refresh { refreshSuggestions(background:true) }
     }
     func completeForYouQueue(_ song:Recommendation,addedCount:Int) throws {
         guard addedCount>0,addedCount<=song.trackIDs.count else { throw AppError(message:"Music did not confirm adding this selection.") }
@@ -524,70 +552,103 @@ func displayDate(_ string: String?) -> String {
         refreshSuggestions()
     }
     func play(_ song:Recommendation) {
+        guard requireCollectionConsent() else { return }
         guard playbackTrackID == nil else { return }
+        let clickCache=suggestions // Capture before any UI refresh can replace this batch.
+        resetAutomaticPreparation()
         playbackMessage="";playbackError=""
         do {
             let request=try archive.playbackRequest(for:song)
-            let following=song.kind == .album ? try archive.automaticQueueSongs(excluding:playedForYouIDs.union(song.trackIDs),currentPersistentID:menuSample?.musicPersistentID,limit:100) : []
-            let rest=song.kind == .album ? max(0,song.trackIDs.count-1) : 0
-            let queueRequests=song.kind == .album ? try Array(song.trackIDs.dropFirst()).map{try archive.queueRequest(for:$0)}+following.map{try archive.queueRequest(for:$0.id)} : []
-            let followingRequests=try following.map{try archive.playbackRequest(for:$0)}
-            let first=(request["tracks"] as? [[String:Any]])?.first
-            let ids=(request["ids"] as? [String]) ?? (first?["ids"] as? [String]) ?? []
-            let control=playbackControl
+            let tracks=request["tracks"] as? [[String:Any]] ?? []
+            let ids=(request["ids"] as? [String]) ?? (tracks.first?["ids"] as? [String]) ?? []
+            let selectedIDs=Set(tracks.flatMap{$0["ids"] as? [String] ?? []}).union(ids)
+            let excluded=playedForYouIDs.union(song.trackIDs).union([song.id])
+            let candidates=try archive.cachedAutomaticCandidates(from:clickCache,excluding:excluded,currentPersistentID:menuSample?.musicPersistentID,knownIDs:selectedIDs)
+            queueLatency.record("selection_cache_reserved",epoch:automaticQueueEpoch,cache:candidates.count)
+            // A genuinely empty cache needs an asynchronous fallback; a nonempty
+            // click reserve never waits for a new 100-item ranking before playback.
+            let fallback=song.kind == .album && candidates.isEmpty ? try archive.automaticCandidateSnapshot() : nil
+            let control=playbackSelectionControl,epoch=automaticQueueEpoch,score=automaticScoreOverride
+            let resolve=catalogResolveOverride,start=playbackStartOverride,trace=queueLatency
+            playbackSelectionRequest += 1
+            let selectionRequest=playbackSelectionRequest
             playbackTrackID=song.id;onChange?()
             playbackQueue.async {
                 let result=Result { () throws -> [String:Any] in
-                    var prepared=request,entries:[CatalogQueueSong]=[]
-                    if song.kind == .album {
-                        let argument=String(decoding:try JSONSerialization.data(withJSONObject:queueRequests),as:UTF8.self)
-                        let resolved=try resolvedQueueSongs(Self.query("catalog",control:control,arguments:[argument,String(rest+5)]),requests:queueRequests)
-                        let albumEntries=resolved.filter{$0.index<rest}
-                        guard albumEntries.count==rest else { throw AppError(message:"A saved album song has no verified catalog ID for background queueing. The current playback was kept unchanged.") }
-                        let after=Array(resolved.filter{$0.index>=rest}.prefix(5))
-                        entries=albumEntries+after
-                        try MusicQueue.checkAvailability(control:control)
-                        prepared["native_queue"]=true
-                        prepared["following_tracks"]=after.map{followingRequests[$0.index-rest]}
+                    var prepared=request,following=candidates,entries:[CatalogQueueSong]=[]
+                    if let fallback {
+                        let began=QueueLatencyTrace.now()
+                        let ranked=fallback.candidates(excluding:excluded,persistentIDs:selectedIDs,score:score)
+                        trace.record("album_empty_cache_scoring",epoch:epoch,request:selectionRequest,since:began)
+                        try control.checkCancellation()
+                        // No control/SQLite lock is held here, and main never waits for
+                        // playbackQueue. Re-enter the archive owner after long scoring.
+                        following=try DispatchQueue.main.sync {
+                            guard epoch==self.automaticQueueEpoch,selectionRequest==self.playbackSelectionRequest else { throw AppError(message:"Playback preparation cancelled.") }
+                            return try self.archive.cachedAutomaticCandidates(from:ranked.map{$0.recommendation},excluding:self.playedForYouIDs.union(song.trackIDs).union([song.id]),currentPersistentID:self.menuSample?.musicPersistentID,knownIDs:selectedIDs)
+                        }
                     }
+                    try control.checkCancellation()
+                    if song.kind == .album {
+                        let requests=following.map{$0.request}
+                        if !requests.isEmpty {
+                            if let resolve { entries=Array(try resolve(requests).prefix(1)) }
+                            else {
+                                let argument=String(decoding:try JSONSerialization.data(withJSONObject:requests),as:UTF8.self)
+                                entries=Array(try resolvedQueueSongs(Self.query("catalog",control:control,arguments:[argument,"1"]),requests:requests).prefix(1))
+                            }
+                        }
+                        if let entry=entries.first {
+                        guard following.indices.contains(entry.index) else { throw AppError(message:"Music returned an invalid album follow-up.") }
+                        try control.checkCancellation()
+                        // Catalog resolution can also outlive a feedback change. Check
+                        // its exact mapping on the archive owner before issuing play.
+                        let eligible=try DispatchQueue.main.sync {
+                            guard epoch==self.automaticQueueEpoch,selectionRequest==self.playbackSelectionRequest else { throw AppError(message:"Playback preparation cancelled.") }
+                            return try self.archive.automaticSongIsEligible(PreparedAutomaticSong(recommendation:following[entry.index].recommendation,entry:entry),excluding:self.playedForYouIDs.union(song.trackIDs).union([song.id]),currentPersistentID:self.menuSample?.musicPersistentID,knownIDs:selectedIDs)
+                        }
+                        guard eligible else { throw AppError(message:"The album's recommended follow-up changed while preparing playback. Refresh For you and try again.") }
+                        prepared["following_tracks"]=[["kind":"song","ids":following[entry.index].request["ids"] as? [String] ?? []]]
+                        } else {
+                            prepared["following_tracks"]=[] as [[String:Any]]
+                        }
+                    }
+                    try control.checkCancellation()
                     let argument=String(decoding:try JSONSerialization.data(withJSONObject:prepared),as:UTF8.self)
-                    var response=try Self.query("play",control:control,arguments:[argument])
+                    var response=try start?(prepared) ?? Self.query("play",control:control,arguments:[argument])
                     try confirmPlayback(response,requestedIDs:ids,albumCount:song.kind == .album ? song.trackIDs.count : nil)
                     if song.kind == .album {
-                        guard response["pending_queue_ids"] as? [String]==entries.map({$0.persistentID}) else {
-                            throw AppError(message:"Music changed the album's song identities before queueing. Automatic additions were stopped.")
+                        guard response["following_ids"] as? [String]==entries.map({$0.persistentID}) else { throw AppError(message:"Music did not confirm the album's following song. Automatic queueing was stopped.") }
+                        if let entry=entries.first {
+                        response["prepared_songs"]=[PreparedAutomaticSong(recommendation:following[entry.index].recommendation,entry:entry)]
+                        response["following_candidates"]=Array(following.dropFirst(entry.index+1))
                         }
-                        var queued=0
-                        for entry in entries {
-                            do { try MusicQueue.append(catalogID:entry.catalogID,control:control);queued += 1 }
-                            catch { response["queue_error"]=error.localizedDescription;break }
-                        }
-                        let added=Array(entries.prefix(queued).dropFirst(rest))
-                        response["following_ids"]=added.map{$0.persistentID}
-                        response["following_indices"]=added.map{$0.index-rest}
                     }
                     return response
                 }
                 DispatchQueue.main.async {
+                    guard selectionRequest==self.playbackSelectionRequest else { return }
                     self.playbackTrackID=nil
+                    guard epoch==self.automaticQueueEpoch else { return }
                     do {
                         let response=try result.get()
                         try self.completeForYouPlayback(song,response:response,requestedIDs:ids)
-                        self.automaticQueueEpoch += 1;self.automaticQueue.stop()
                         if song.kind == .album {
-                            let appended=response["following_ids"] as? [String] ?? []
-                            let indices=response["following_indices"] as? [Int] ?? []
-                            guard indices.count==appended.count,indices.allSatisfy({following.indices.contains($0)}) else {
-                                throw AppError(message:"Music did not confirm the album's following songs.")
+                            let prepared=response["prepared_songs"] as? [PreparedAutomaticSong] ?? []
+                            if let first=prepared.first {
+                                let albumMessage=self.playbackMessage
+                                try self.completeAutomaticQueue([first.recommendation],addedCount:1,refresh:false)
+                                self.playbackMessage=albumMessage+" One recommended song follows the album."
                             }
-                            let songs=indices.map{following[$0]}
-                            try self.completeAutomaticQueue(songs,addedCount:songs.count,prefix:self.playbackMessage)
-                            if let problem=response["queue_error"] as? String { self.playbackError="Automatic queue stopped: "+problem }
-                            else { self.automaticQueue.start(queued:appended.map{[$0]},albumIDs:Set(response["album_ids"] as? [String] ?? [])) }
+                            if prepared.first != nil {
+                                self.startAlbumAutomaticQueue(first:prepared.first,following:[],albumIDs:Set(response["album_ids"] as? [String] ?? []),candidates:response["following_candidates"] as? [AutomaticCandidate] ?? [],excluding:Set(song.trackIDs+[song.id]))
+                            } else {
+                                self.resetAutomaticPreparation()
+                                self.playbackMessage += " No eligible follow-up song is available."
+                            }
                             self.refreshMenuSong()
                         } else {
-                            self.automaticQueue.start(queued:[],currentID:response["persistent_id"] as? String)
-                            self.addAutomaticSongs()
+                            self.startAutomaticQueue(currentID:response["persistent_id"] as? String,cached:candidates.map{$0.recommendation},excluding:Set(song.trackIDs+[song.id]))
                         }
                     } catch { self.playbackError=error.localizedDescription }
                     self.onChange?()
@@ -598,13 +659,11 @@ func displayDate(_ string: String?) -> String {
     func completeForYouPlayback(_ song:Recommendation,response:[String:Any],requestedIDs:[String]) throws {
         try confirmPlayback(response,requestedIDs:requestedIDs,albumCount:song.kind == .album ? song.trackIDs.count : nil)
         if let playlist=response["playlist_id"] as? String { try archive.meta("album_playlist_id",playlist) }
-        try archive.transaction {
-            if song.kind == .song { try archive.feedback(song.id,"like") }
-            try archive.rememberForYouPlayback(song)
-        }
+        // Accepting a recommendation is not an explicit preference; only the Like action writes feedback.
+        try archive.rememberForYouPlayback(song)
         playedForYouIDs.insert(song.id)
         playbackMessage=song.kind == .album ? "Started your saved songs from \(song.title) in album order." : "Started \(song.title) in Music."
-        refreshSuggestions()
+        DispatchQueue.main.async { self.refreshSuggestions(background:true) }
     }
     nonisolated static func query(_ script: String, control:QueryControl,arguments:[String]=[]) throws -> [String:Any] {
         guard let url=Bundle.main.url(forResource:script,withExtension:"js") else { throw AppError(message:"Missing Music reader.") }
@@ -662,6 +721,60 @@ func displayDate(_ string: String?) -> String {
     }
 }
 
+struct AppContentView:View {
+    @ObservedObject var model:Model
+    var body:some View {
+        if model.showSetup { SetupView(model:model) }
+        else { HistoryView(model:model) }
+    }
+}
+
+struct SetupView:View {
+    @ObservedObject var model:Model
+    var body:some View {
+        VStack(alignment:.leading,spacing:20) {
+            HStack(alignment:.top,spacing:16) {
+                Image(systemName:"music.note.list").font(.system(size:28,weight:.medium)).foregroundStyle(Color.accentColor).frame(width:36)
+                VStack(alignment:.leading,spacing:6) {
+                    Text("Set up AM Track").font(.system(size:25,weight:.semibold))
+                    Text("Build a listening history from the music you play on this Mac.")
+                        .font(.system(size:13)).foregroundStyle(.secondary)
+                }
+            }
+            Divider()
+            VStack(alignment:.leading,spacing:18) {
+                setupRow("music.note",title:"Connect your Music library",detail:"Read song and album details, play counts, and last-played dates to help you rediscover your music.")
+                setupRow("waveform",title:"Record from now on",detail:"While recording is on and this Mac is awake, check Music every 5 seconds. Existing play counts never become invented past listening events.")
+                setupRow("internaldrive",title:"Keep your data on this Mac",detail:"History and preferences stay in your local data folder. AM Track does not upload them or send analytics. Music may contact Apple for playback.")
+            }
+            Text("Open Music, then enable recording below. macOS will ask for permission to control Music. You can stop recording from the menu bar; your choice is remembered when AM Track reopens.")
+                .font(.system(size:13)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+            if !model.error.isEmpty {
+                Label(model.error,systemImage:"exclamationmark.triangle").font(.system(size:12)).foregroundStyle(.orange)
+            }
+            Spacer(minLength:0)
+            HStack {
+                Button("Not now") { model.showSetup=false }
+                Spacer()
+                Button("Enable recording") { model.finishSetup() }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }.padding(32).frame(maxWidth:680,maxHeight:.infinity,alignment:.topLeading)
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .background(Color(nsColor:.windowBackgroundColor))
+    }
+    func setupRow(_ symbol:String,title:String,detail:String) -> some View {
+        HStack(alignment:.top,spacing:12) {
+            Image(systemName:symbol).font(.system(size:17)).foregroundStyle(.secondary).frame(width:24)
+            VStack(alignment:.leading,spacing:4) {
+                Text(title).font(.system(size:13,weight:.semibold))
+                Text(detail).font(.system(size:13)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+            }
+        }
+    }
+}
+
 struct HistoryView: View {
     @ObservedObject var model: Model
     var selected:Int { model.selectedTab }
@@ -684,8 +797,19 @@ struct HistoryView: View {
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .accessibilityHint("Controls this history recorder. Does not change Music playback.")
             }
-            if !model.error.isEmpty {
-                Label(model.error,systemImage:"exclamationmark.triangle").font(.system(size:12)).foregroundStyle(.orange).textSelection(.enabled)
+            if !model.collectionEnabled {
+                HStack {
+                    Text("Enable Music access to build your own listening history and recommendations.")
+                    Spacer()
+                    Button("Set up Music access") { model.showSetup=true }
+                }.font(.system(size:13))
+            }
+            if !model.error.isEmpty || !model.libraryDetailsError.isEmpty {
+                VStack(alignment:.leading,spacing:6) {
+                    Label(model.error.isEmpty ? model.libraryDetailsError : model.error,systemImage:"exclamationmark.triangle")
+                        .foregroundStyle(.orange).textSelection(.enabled)
+                    Button("Open Automation settings") { model.openAutomationSettings() }.buttonStyle(.link)
+                }.font(.system(size:12))
             }
             HStack(spacing:16) {
                 Picker("History",selection:$model.selectedTab) {
@@ -761,14 +885,14 @@ struct SuggestionsView:View {
                 Text("Old favorites, whole albums, and a little discovery.").font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
                 Button("Next for you") { model.nextForYou() }.disabled(model.playbackTrackID != nil)
-                    .help("Add five recommended songs, then keep filling after finishes and skips")
+                    .help("Keep one recommended song queued and prepare the following song ahead of time")
                 Button("Album preferences…") { showAlbumPreferences=true }
                 Button("Undo last feedback") { model.undoFeedback() }
                 Button("Refresh") { model.refreshSuggestions();model.refreshLibraryDetails(force:true);model.refreshMenuSong() }
             }
             if model.automaticQueue.enabled {
                 HStack {
-                    Text(model.automaticQueue.waitingForAlbum ? "Auto queue · waiting until the album finishes" : "Auto queue · refills after finishes and skips")
+                    Text(model.automaticQueue.waitingForAlbum ? "Auto queue · waiting until the album finishes" : "Auto queue · one song ahead")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Stop auto queue") { model.stopAutomaticQueue() }.controlSize(.small)
@@ -862,6 +986,7 @@ struct AlbumPreferencesView:View {
     var item: NSStatusItem!
     var window: NSWindow!
     var menuSongTimer:Timer?
+    var musicPlaybackObservers:[NSObjectProtocol]=[]
     var statusMenuIsOpen=false
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
@@ -885,9 +1010,16 @@ struct AlbumPreferencesView:View {
             model.onChange={ [weak self] in self?.updateMenu() }
             window=NSWindow(contentRect:NSRect(x:0,y:0,width:1100,height:680),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
             window.title="AM Track";window.minSize=NSSize(width:888,height:490);window.isReleasedWhenClosed=false
-            window.contentView=NSHostingView(rootView:HistoryView(model:model));window.center()
+            window.contentView=NSHostingView(rootView:AppContentView(model:model));window.center()
             createAppMenu();updateMenu();showHistory()
             model.refreshMenuSong()
+            // Playback notifications dispatch a prepared next song promptly; polling is a fallback.
+            for name in ["com.apple.Music.playerInfo","com.apple.iTunes.playerInfo"] {
+                musicPlaybackObservers.append(DistributedNotificationCenter.default().addObserver(forName:Notification.Name(name),object:nil,queue:.main) { [weak self] _ in
+                    guard let self else { return }
+                    DispatchQueue.main.async { self.model?.refreshMenuSong(notification:true) }
+                })
+            }
             model.refreshLibraryDetails()
             menuSongTimer=Timer.scheduledTimer(withTimeInterval:2,repeats:true) { [weak self] _ in
                 guard let delegate=self else { return }
@@ -896,7 +1028,7 @@ struct AlbumPreferencesView:View {
                     delegate.model?.refreshMenuSong()
                 }
             }
-            if arguments.contains("--record") { model.start() }
+            if model.collectionEnabled && (arguments.contains("--record") || model.resumeRecordingOnLaunch) { model.start() }
 
         } catch {
             let alert=NSAlert();alert.messageText="AM Track could not open your history";alert.informativeText=error.localizedDescription;alert.runModal();NSApp.terminate(nil)
@@ -937,7 +1069,7 @@ struct AlbumPreferencesView:View {
         }
         let nextEntry=add(model.playbackTrackID == nil ? "Next for you" : "Updating Music…",#selector(nextForYou))
         nextEntry.isEnabled=model.playbackTrackID == nil
-        nextEntry.toolTip="Add five recommended songs and keep filling the queue after finishes or skips."
+        nextEntry.toolTip="Keep one recommended song queued, with the following song prepared ahead of time."
         if model.automaticQueue.enabled { add("Stop auto queue",#selector(stopAutomaticQueue)) }
         menu.addItem(.separator())
         add("For you · Click to play")
@@ -975,8 +1107,8 @@ struct AlbumPreferencesView:View {
     @objc func checkHistory() { model.checkHistory() }
     @objc func chooseHistory() { model.chooseHistory() }
     @objc func openFolder() { NSWorkspace.shared.open(model.archive.folder) }
-    @objc func quit() { model.libraryDetailsControl.cancel();model.menuSongControl.cancel();model.playbackControl.cancel();model.stop();NSApp.terminate(nil) }
-    func applicationWillTerminate(_ notification:Notification) { menuSongTimer?.invalidate();model?.libraryDetailsControl.cancel();model?.menuSongControl.cancel();model?.playbackControl.cancel();model?.stop() }
+    @objc func quit() { model.libraryDetailsControl.cancel();model.menuSongControl.cancel();model.playbackControl.cancel();model.playbackSelectionControl.cancel();model.automaticPreparationControl.cancel();model.stop(remember:false);NSApp.terminate(nil) }
+    func applicationWillTerminate(_ notification:Notification) { musicPlaybackObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) };menuSongTimer?.invalidate();model?.libraryDetailsControl.cancel();model?.menuSongControl.cancel();model?.playbackControl.cancel();model?.playbackSelectionControl.cancel();model?.automaticPreparationControl.cancel();model?.stop(remember:false) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool { false }
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool { showHistory();return true }
 }
@@ -1021,7 +1153,7 @@ func selfTest() throws {
 @main struct AMTrackApplication {
     @MainActor static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            do { try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try recommendationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
+            do { try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")
         } else if CommandLine.arguments.contains("--upgrade-only") {

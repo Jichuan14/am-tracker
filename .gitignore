@@ -6,6 +6,10 @@
 !/.gitattributes
 !/.gitignore
 !/README.md
+!/INSTALL.txt
+!/RELEASE-NOTES.md
+!/scripts/
+!/scripts/package-release.sh
 
 # Source code, bundled scripts, and synthetic tests.
 !/app-source/
@@ -28,3 +32,11 @@
 !/app-source/Resources/library.js
 !/app-source/Resources/play.js
 !/app-source/Resources/sample.js
+!/app-source/AutomaticPlayback.swift
+!/app-source/QueueLatency.swift
+!/app-source/OneAheadTests.swift
+!/app-source/CachedReserveTests.swift
+!/app-source/CachedAlbumTests.swift
+!/app-source/BackgroundQueueTests.m
+!/app-source/PlaybackReadTests.js
+!/app-source/Resources/playback.js

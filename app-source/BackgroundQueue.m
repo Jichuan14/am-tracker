@@ -14,6 +14,13 @@ static int output(NSDictionary *value,int code) {
     NSData *data=[NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
     fwrite(data.bytes,1,data.length,stdout);fputc('\n',stdout);return code;
 }
+// Keep the submission policy in one place for the real helper and its mock test.
+static void submitQueue(id queue,id destination,id command,void (^completion)(id)) {
+    // Keep the existing background insertion route. The app submits only one
+    // next song at a time; later recommendations are prepared locally.
+    const int nextPosition=1;
+    [command insertPlaybackQueueWithResult:queue atPosition:nextPosition onDestination:destination withOptions:@{} completion:completion];
+}
 int main(int argc,const char **argv) { @autoreleasepool { @try {
     if(argc!=2) return output(@{@"status":@"invalid_id"},2);
     BOOL check=!strcmp(argv[1],"--check");
@@ -37,7 +44,7 @@ int main(int argc,const char **argv) { @autoreleasepool { @try {
     if(!queue||!destination||!command) return output(@{@"status":@"unsupported"},3);
     __block BOOL done=NO;__block NSDictionary *response;
     NSLock *completionLock=[NSLock new];
-    [command insertPlaybackQueueWithResult:queue atPosition:2 onDestination:destination withOptions:@{} completion:^(id result) {
+    submitQueue(queue,destination,command,^(id result) {
         [completionLock lock];
         @try {
             id error=[result respondsToSelector:NSSelectorFromString(@"error")]?[result valueForKey:@"error"]:@"Missing error field";
@@ -47,7 +54,7 @@ int main(int argc,const char **argv) { @autoreleasepool { @try {
             response=@{@"status":accepted?@"accepted":@"rejected",@"catalog_id":storeID,@"return_statuses":[statuses isKindOfClass:NSArray.class]?statuses:@[],@"error":error?[error description]:@""};
         } @catch(NSException *exception) {response=@{@"status":@"invalid_response"};}
         done=YES;[completionLock unlock];
-    }];
+    });
     NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:20];
     while(deadline.timeIntervalSinceNow>0) {
         [completionLock lock];BOOL finished=done;[completionLock unlock];
