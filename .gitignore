@@ -6,8 +6,15 @@
 !/.gitattributes
 !/.gitignore
 !/README.md
+!/README.zh-CN.md
 !/INSTALL.txt
 !/RELEASE-NOTES.md
+!/docs/
+!/docs/DEVELOPMENT.md
+!/docs/images/
+!/docs/images/history.jpg
+!/docs/images/for-you.jpg
+!/docs/images/album-preferences.jpg
 !/scripts/
 !/scripts/package-release.sh
 

@@ -1,72 +1,85 @@
 # AM Track
 
-A native macOS menu bar app for tracking listening in Music and finding songs to revisit from your library. Built with Swift, SwiftUI, SQLite, and JavaScript for Automation.
+**Keep a listening history. Rediscover your Music library.**
 
-## Features
+English | [简体中文](README.zh-CN.md)
 
-- Record the current song and playback position while recording is on.
-- Search listening history and export it to CSV.
-- Optionally import Music's `History.dat` and reconcile it with recorded observations.
-- Get local song and album recommendations, with Like, Not now, and Less like this feedback.
-- Play a selected song or your saved album tracks in order, and queue follow-up recommendations.
+AM Track is a native macOS menu bar app that records what you play in Music and helps you choose what to hear next. Browse your listening history, return to old favorites, play saved albums in order, and keep recommendations coming as you listen. Your history and preferences stay on your Mac.
 
-On first launch, choose **Enable recording** to allow local collection, or **Not now** to leave Music access off. Your recording choice is remembered across launches. Closing the window keeps the menu bar app running; quitting stops it. Album preferences start in automatic mode and can be changed in **Album preferences…**.
+[Download the beta](https://github.com/Jichuan14/am-tracker/releases) · [Installation guide](INSTALL.txt) · [Release notes](RELEASE-NOTES.md)
 
-## Download and install
+![For you recommendations with reasons, playback controls, and feedback buttons](docs/images/for-you.jpg)
 
-Download the app ZIP from [GitHub Releases](https://github.com/Jichuan14/am-tracker/releases), unzip it, and move `AM Track.app` to Applications. The first beta supports **Apple Silicon Macs running macOS 13 or later**. You do not need Xcode or developer tools to use the downloaded app.
+## What you can do
 
-This beta is ad hoc signed and **not notarized by Apple**. If macOS blocks it, use **System Settings > Privacy & Security > Open Anyway** for AM Track if you trust the download. See the [installation guide](INSTALL.txt) and [Apple's instructions](https://support.apple.com/102445). The release also includes a SHA-256 checksum file.
+### Revisit your listening history
 
-Open Music, choose **Enable recording**, and allow AM Track to control Music when prompted. AM Track reads your own library metadata and records future listening on this Mac. Past play counts help recommendations without being converted into invented listening events. Recommendations may initially be empty if the library has no saved songs or listening evidence.
+Turn on recording to save songs and observed listening time as Music plays. Search by song or artist, see where each entry came from, and export your history to CSV.
 
-## Build and run
+You can also check Music's `History.dat` manually to fill recording gaps. AM Track reconciles matching sequences into one history, keeping unknown dates and listening durations marked as unknown. Library play counts help recommendations without becoming invented listening events.
 
-Requires macOS 13 or later and Xcode Command Line Tools. Playback and library access use the macOS Music app; Apple Music catalog availability depends on your account and library.
+![History showing recorded listening, imported Music entries, search, and CSV export](docs/images/history.jpg)
 
-From the repository folder:
+### Find something worth playing again
+
+**For you** recommends songs and albums from your saved library. It combines listening history, library play counts, recent listening, and your feedback to bring back old favorites alongside less-played music. Each recommendation includes a short reason. Songs known to have played in the last 24 hours are excluded.
+
+| Control | What it does |
+| --- | --- |
+| **Play** | Starts the selected song in Music. |
+| **Like** | Marks a song or album as an explicit preference. Playing it does not automatically Like it. |
+| **Not now** | Hides the recommendation for 24 hours. |
+| **Less like this** | Hides the item and reduces recommendations with similar metadata. |
+| **Undo last feedback** | Reverses your latest rating or album listening preference change. |
+| **Find in Music** | Opens a search in Music. |
+
+You can also rate the current song from the menu bar or **For you**, and rate past songs by right-clicking them in **History**.
+
+### Listen to albums your way
+
+In **Album preferences…**, choose **Learn from listening**, **Prefer whole album**, or **Prefer individual songs** for each album. Automatic learning looks for repeated album listening, while individual song Likes remain separate.
+
+When an album is recommended, **Play album** plays the songs you have saved from it in disc and track order. This covers your saved tracks, which may be only part of the release.
+
+![Album preferences with a listening-style selector for each saved album](docs/images/album-preferences.jpg)
+
+### Keep the next song ready
+
+**Next for you** adds one recommended song to the end of Music's queue without interrupting the current track. Automatic queueing prepares future choices and adds a replacement as monitored playback advances. Playing a recommendation also enables it; album playback waits until the album's follow-up song before replenishing.
+
+**Stop auto queue** stops future additions and leaves songs already queued in place. Queueing works in the background without bringing Music forward or requiring Accessibility access.
+
+### Control it from the menu bar
+
+See the current song, start or stop recording, give feedback, and play recommendations without opening the main window. Closing the window keeps AM Track running. Quitting stops it, and your recording choice is remembered when you reopen it.
+
+## Get started
+
+The downloadable beta supports **Apple Silicon Macs running macOS 13 or later** and uses the macOS Music app. No developer tools are needed for the download.
+
+1. Download the app ZIP from [Releases](https://github.com/Jichuan14/am-tracker/releases), unzip it, and move **AM Track.app** to Applications.
+2. Open AM Track and Music. Choose **Enable recording** and allow AM Track to control Music when prompted. **Not now** leaves Music access and recording off.
+3. Play music to build your history, then open **For you** to explore recommendations. Save songs to your Music library first; an empty library or limited listening evidence can leave recommendations empty.
+
+The beta is ad hoc signed and **not notarized by Apple**. If macOS blocks it and you trust the download, use **System Settings > Privacy & Security > Open Anyway**. See the [installation guide](INSTALL.txt) for details.
+
+## Your data stays local
+
+AM Track stores listening history, library metadata, and feedback locally and does not upload them or send analytics. Music itself may contact Apple's services for playback.
+
+New installations use `~/Library/Application Support/AM Track/`. An existing database beside the app or a previously selected data folder may be used instead. **Open data folder** shows the active location; **Export history** creates `history.csv`. Quit AM Track before backing up its data folder.
+
+After Music access is enabled, library metadata and playback controls can refresh with recording off. Recording observes this Mac while the app is running and the Mac is awake. It does not collect listening from other devices, and no login item is installed.
+
+Queue additions require verified catalog IDs and use a private macOS playback interface. Some tracks, including local imports without those IDs, cannot be queued this way, and compatibility may change with macOS updates. Recommendations currently come from your saved library.
+
+## Build from source
+
+Built with Swift, SwiftUI, SQLite, and JavaScript for Automation. Requires macOS 13 or later and Xcode Command Line Tools.
 
 ```sh
 ./app-source/build.sh
 open "app-source/.build/AM Track.app"
 ```
 
-The build script compiles and locally signs the app, then runs the included checks with test fixtures and mocked Music commands. Build output goes in `app-source/.build/`.
-
-Allow AM Track to control Music when macOS requests Automation permission. Use **Start recording** in the menu bar to begin tracking. **Check History.dat** is optional and runs only when requested.
-
-Queue additions use a private macOS playback interface. Compatibility may change with macOS updates, and tracks without a verified catalog ID cannot use this queue backend.
-
-## Data and privacy
-
-Listening history, library metadata, and recommendation feedback are stored locally. A new installation defaults to `~/Library/Application Support/AM Track/`. If an existing `history.sqlite3` is beside the app, that folder is used instead. **Open data folder** shows the active location.
-
-Runtime files include `history.sqlite3`, `history.csv`, `status.json`, `database-health.json`, backups, and any selected `History.dat`. These contain private listening information and should stay on your Mac. Music itself may contact Apple's services for playback.
-
-AM Track does not upload listening data or send analytics. Library metadata and playback controls can continue refreshing after recording stops, once Music access has been enabled. Recording requires the app to be running while the Mac is awake and does not collect listening from other devices. No login item is installed.
-
-This repository contains source code and test fixtures, which may use real song names or public catalog IDs. Its `.gitignore` allows only reviewed project files by name, so databases, exports, reports, backups, app bundles, build caches, and other unlisted files are excluded. Add an explicit allowlist entry when introducing a new source file. Avoid force-adding runtime files.
-
-## Package a beta
-
-On an Apple Silicon Mac with Xcode Command Line Tools, run:
-
-```sh
-./scripts/package-release.sh
-```
-
-This builds and tests the app, reconstructs a clean bundle from required files, and creates the app ZIP and SHA-256 checksum under `dist/`. Only the app and installation instructions go into the ZIP. Upload those two assets to a GitHub pre-release tagged `v2.9.0-beta.2`, using [the release notes](RELEASE-NOTES.md). Packaging does not submit anything to Apple.
-
-## Source layout
-
-| Path | Contents |
-| --- | --- |
-| `app-source/main.swift` | App interface, menu bar, recording, and startup |
-| `app-source/HistoryStore.swift`, `UnifiedHistory.swift` | History storage, imports, and reconciliation |
-| `app-source/Recommendations.swift`, `AlbumTaste.swift` | Recommendation ranking and album preferences |
-| `app-source/MusicPlayback.swift`, `MusicQueue.swift`, `AutomaticPlayback.swift`, `BackgroundQueue.m` | Playback and queue integration |
-| `app-source/QueueLatency.swift` | Bounded local queue timing diagnostics |
-| `app-source/Resources/` | Scripts for reading and controlling Music |
-| `app-source/*Tests.*` | Synthetic history, recommendation, and playback checks |
-| `app-source/build.sh`, `Info.plist` | Build script and app configuration |
-
+The script compiles and locally signs the app, then runs isolated checks. For source layout and beta packaging, see [Development](docs/DEVELOPMENT.md).
