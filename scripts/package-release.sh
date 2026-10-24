@@ -4,14 +4,18 @@ set -eu
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 source_root="$project_root/app-source"
 arch="$(/usr/bin/uname -m)"
+if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != "--skip-tests" ]]; }; then
+  print -u2 "Usage: $0 [--skip-tests]"
+  exit 2
+fi
 if [[ "$arch" != "arm64" ]]; then
-  print -u2 "This beta package must be built and tested on an Apple Silicon Mac."
+  print -u2 "This beta package must be built on an Apple Silicon Mac."
   exit 1
 fi
-"$source_root/build.sh"
+"$source_root/build.sh" Release "$@"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$source_root/Info.plist")"
 [[ "$version" == <->.<->.<-> ]] || { print -u2 "Invalid app version."; exit 1; }
-asset="AM-Track-$version-beta.2-macOS-arm64.zip"
+asset="AM-Track-$version-beta.3-macOS-arm64.zip"
 stage_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp/}am-track-package.XXXXXX")"
 trap '/bin/rm -rf "$stage_root"' EXIT
 app_root="$stage_root/AM Track.app"
@@ -20,7 +24,7 @@ app_root="$stage_root/AM Track.app"
 # Reconstruct the app from required files only. Never copy a working data folder.
 /bin/cp "$source_root/Info.plist" "$app_root/Contents/Info.plist"
 for executable in AMTrack AMQueue; do
-  /bin/cp "$source_root/.build/AM Track.app/Contents/MacOS/$executable" "$app_root/Contents/MacOS/$executable"
+  /bin/cp "$source_root/.build/Release/AM Track.app/Contents/MacOS/$executable" "$app_root/Contents/MacOS/$executable"
   minimum="$(/usr/bin/otool -l "$app_root/Contents/MacOS/$executable" | /usr/bin/awk '/LC_BUILD_VERSION/ { found=1 } found && $1=="minos" { print $2; exit }')"
   [[ "$minimum" == "13.0" ]] || { print -u2 "$executable has unexpected minimum macOS version: $minimum"; exit 1; }
 done

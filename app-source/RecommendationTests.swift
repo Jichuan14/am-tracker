@@ -1,6 +1,8 @@
 import Foundation
+import CryptoKit
 
 func recommendationTests() throws {
+    try recommendationDifferentialTests()
     func expect(_ value:Bool,_ message:String) throws {
         guard value else { throw AppError(message:"Recommendation test: "+message) }
     }
@@ -151,4 +153,96 @@ func recommendationMigrationTests() throws {
           try db.rows("PRAGMA user_version").first?["user_version"]=="4",
           FileManager.default.fileExists(atPath:try db.value("recommendations_upgrade_backup")) else { throw AppError(message:"v4 migration lost existing history, feedback or its backup") }
     print("PASS: backed-up v3 to v4 migration preserves identities and feedback.")
+}
+
+// Full metadata and raw Double bits must agree, not just ranking invariants.
+func recommendationFingerprint(_ items:[Recommendation]) -> String {
+    items.map { r in
+        [r.id,r.title,r.artist,r.album,r.catalogID,r.reason,String(r.score.bitPattern),r.bucket,
+         r.kind.rawValue,r.albumID ?? "<nil>",r.trackIDs.joined(separator:"|"),r.playbackIssue ?? "<nil>"].joined(separator:"\u{1f}")
+    }.joined(separator:"\n")
+}
+
+func recommendationDifferentialTests() throws {
+    func check(_ actual:[Recommendation],_ expected:[Recommendation],_ context:String) throws {
+        guard recommendationFingerprint(actual)==recommendationFingerprint(expected) else {
+            throw AppError(message:"Recommendation differential mismatch: "+context)
+        }
+    }
+    struct Random {
+        var state:UInt64=0x521c_73a9
+        mutating func next(_ n:Int) -> Int {
+            state=state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 32) % UInt64(n))
+        }
+    }
+    var random=Random()
+    var fingerprints=Data(),fallbackCounts=[0,0,0,0]
+    let limits=[-1,0,1,10,100,240]
+    // Include exact and near ties, empty vectors, shared albums, missing artists,
+    // exhausted buckets/artist caps, and album/song conflicts in arbitrary input order.
+    for fixture in 0..<36 {
+        var candidates:[Recommendation]=[],vectors:[String:[String:Double]]=[:]
+        let count=fixture==0 ? 0 : 25+random.next(100)
+        for i in 0..<count {
+            let id=String(format:"candidate-%04d",i),album=i%5==0 ? nil : "album-\(i/4)"
+            let kind:RecommendationKind=i%4==0 ? .album : .song
+            let artist=fixture%4==0 ? "Same artist" : ["", "ARTIST A", "artist a", "Beyoncé", "Beyonce", "Other \(random.next(12))"][random.next(6)]
+            let buckets=["Rediscover","Familiar","Explore your library"]
+            let score=fixture%3==0 ? 0.5 : Double(random.next(5))/10 + (i%7==0 ? Double.ulpOfOne : 0)
+            candidates.append(Recommendation(id:id,title:id,artist:artist,album:album ?? "",catalogID:"",reason:"fixture \(i)",score:score,
+                bucket:buckets[fixture%5==0 ? 1 : random.next(3)],kind:kind,albumID:album,trackIDs:["track-\(i)"],playbackIssue:i%9==0 ? "blocked" : nil))
+            var vector:[String:Double]=[:]
+            for _ in 0..<random.next(5) { vector["feature-\(random.next(9))"]=Double(random.next(4))/4 }
+            vectors[id]=vector
+        }
+        // Reversing input and constructing dictionaries here exercises tie independence.
+        candidates.reverse()
+        let prepared=vectors.mapValues{RecommendationFeatures($0)}
+        for limit in limits {
+            let metrics=RecommendationMetrics()
+            let actual=selectRecommendations(candidates,vectors:prepared,limit:limit,metrics:metrics)
+            fingerprints.append(Data(recommendationFingerprint(actual).utf8))
+            for tier in 0..<4 { fallbackCounts[tier] += metrics.selectedFallbackCounts[tier] }
+            try check(actual,
+                      selectRecommendationsReference(candidates,vectors:vectors,limit:limit),"selector fixture \(fixture), limit \(limit)")
+            guard metrics.selectionSimilarityCalls<=count*max(0,limit-1) else { throw AppError(message:"Selection exceeded O(NK) similarity bound") }
+        }
+    }
+    guard fallbackCounts.allSatisfy({$0>0}) else { throw AppError(message:"Differential fixtures did not exercise every selection fallback") }
+    let now=Date(timeIntervalSince1970:1_790_000_000)
+    for fixture in 0..<12 {
+        var tracks:[[String:String]]=[],library:[[String:String]]=[],history:[[String:String]]=[],events:[[String:String]]=[]
+        var albums:[AlbumCollection]=[],feedback:[String:RecommendationFeedback]=[:],modes:[String:AlbumListeningMode]=[:]
+        let count=30+random.next(70)
+        for i in 0..<count {
+            let id="track-\(i)",artist=i%11==0 ? "" : "Artist \(i/6)",title=i%13==0 ? "" : "Album \(i/3)"
+            tracks.append(["id":id,"title":"Title \(i)","album_artist":artist,"album_title":title,"genre":i%7==0 ? "" : "Genre \(random.next(5))","duration":"180"])
+            var row=["track_id":id,"play_count":String(random.next(100))]
+            if i%7 != 0 { row["last_played"]=stamp(now.addingTimeInterval(-Double(random.next(25))*86400)) }
+            library.append(row)
+            if i%3==0 { history.append(["track_id":id,"music_snapshot_id":"1"]) }
+            if i%2==0 {
+                let date=now.addingTimeInterval(-Double(i)*190-Double(fixture%3)*86400)
+                let event=["id":"event-\(i)","track_id":id,"first_observed_at":stamp(date),"last_listening_at":stamp(date.addingTimeInterval(170)),"duration":"180","observed_listening_seconds":"170"]
+                events.append(event);if i%10==0 { events.append(event) }
+            }
+            if i%8==0 { feedback[id]=RecommendationFeedback(liked:true) }
+            if i%17==0 { feedback[id]=RecommendationFeedback(less:true) }
+            if let albumID=albumIdentity(artist:artist,title:title) {
+                let track=AlbumTrack(id:id,artist:artist,title:title,disc:1,discs:1,number:i%3+1,count:3)
+                if let index=albums.firstIndex(where:{$0.id==albumID}) { albums[index].tracks.append(track) }
+                else { albums.append(AlbumCollection(id:albumID,artist:artist,title:title,tracks:[track]));modes[albumID]=i%2==0 ? .album : .tracks }
+            }
+        }
+        events.sort{($0["first_observed_at"] ?? "")<($1["first_observed_at"] ?? "")}
+        let snapshot=RecommendationSnapshot(now:now,feedback:feedback,albums:albums,playbackCooldowns:fixture%2==0 ? ["track-3":1] : [:],modes:modes,trackRows:tracks,historyRows:history,libraryRows:library,eventRows:events)
+        for limit in limits {
+            let actual=snapshot.scored(limit:limit)
+            fingerprints.append(Data(recommendationFingerprint(actual).utf8))
+            try check(actual,snapshot.scoredReference(limit:limit),"snapshot \(fixture), limit \(limit)")
+        }
+    }
+    print("Differential fingerprint: \(SHA256.hash(data:fingerprints).map{String(format:"%02x",$0)}.joined())")
+    print("PASS: full scorer and selector differential fixtures, exact scores/metadata, tie/fallback/conflict/limit cases and O(NK) similarity bound.")
 }

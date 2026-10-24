@@ -13,6 +13,8 @@ open "app-source/.build/AM Track.app"
 
 The build script compiles and locally signs the app, then runs included checks with test fixtures and mocked Music commands. Output goes in `app-source/.build/`.
 
+Use `./app-source/build.sh Release` for an optimized build in `app-source/.build/Release/`. Add `--skip-tests` to compile and sign without running checks; tests run by default.
+
 Editing source does not change a running app. Quit the installed app, replace its bundle with the new build, and relaunch. Preserve its data folder. macOS may ask to renew permissions after a rebuild.
 
 ## Package a beta
@@ -23,7 +25,7 @@ On an Apple Silicon Mac with Xcode Command Line Tools:
 ./scripts/package-release.sh
 ```
 
-This builds and tests the app, reconstructs a clean bundle from required files, and creates the app ZIP and SHA-256 checksum under `dist/`. Only the app and installation instructions go into the ZIP. Use the matching [release notes](../RELEASE-NOTES.md) when publishing a beta. Packaging does not submit anything to Apple.
+This builds and tests the optimized Release app, reconstructs a clean bundle from required files, and creates the app ZIP and SHA-256 checksum under `dist/`. Add `--skip-tests` only when intentionally packaging without tests. Only the app and installation instructions go into the ZIP. Use the matching [release notes](../RELEASE-NOTES.md) when publishing a beta. Packaging does not submit anything to Apple.
 
 ## Source layout
 
@@ -31,7 +33,7 @@ This builds and tests the app, reconstructs a clean bundle from required files, 
 | --- | --- |
 | `app-source/main.swift` | App interface, menu bar, recording, and startup |
 | `app-source/HistoryStore.swift`, `UnifiedHistory.swift` | History storage, imports, and reconciliation |
-| `app-source/Recommendations.swift`, `AlbumTaste.swift` | Recommendation ranking and album preferences |
+| `app-source/Recommendations.swift`, `RecommendationRotation.swift`, `AlbumTaste.swift` | Recommendation ranking, persistent batch rotation, and album preferences |
 | `app-source/MusicPlayback.swift`, `MusicQueue.swift`, `AutomaticPlayback.swift`, `BackgroundQueue.m` | Playback and queue integration |
 | `app-source/QueueLatency.swift` | Bounded local queue timing diagnostics |
 | `app-source/Resources/` | Scripts for reading and controlling Music |

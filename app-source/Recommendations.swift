@@ -11,7 +11,7 @@ struct Recommendation:Identifiable {
 }
 private struct TasteTrack {
     let id:String,title:String,artist:String,album:String,catalogID:String,albumID:String?
-    let features:[String:Double]
+    let features:RecommendationFeatures
     let duration:Double
     var historyWeight=0.0,recordedWeight=0.0,historyCount=0.0,libraryCount=0.0
     var lastPlayed:Date?
@@ -33,8 +33,28 @@ private func unit(_ vector:[String:Double]) -> [String:Double] {
     let length=sqrt(vector.keys.sorted().reduce(0){$0+vector[$1]!*vector[$1]!})
     return length>0 ? vector.mapValues{$0/length} : [:]
 }
-private func similarity(_ a:[String:Double],_ b:[String:Double]) -> Double {
-    a.keys.sorted().reduce(0){$0+a[$1]!*(b[$1] ?? 0)}
+// Cache the left operand's original sorted accumulation order once per vector.
+struct RecommendationFeatures {
+    let values:[String:Double]
+    let entries:[(String,Double)]
+    init(_ values:[String:Double]) {
+        self.values=values
+        entries=values.keys.sorted().map{($0,values[$0]!)}
+    }
+    func similarity(to other:RecommendationFeatures) -> Double {
+        entries.reduce(0){$0+$1.1*(other.values[$1.0] ?? 0)}
+    }
+}
+final class RecommendationMetrics {
+    var stageMilliseconds:[String:Double]=[:]
+    var candidateCount=0,selectionSimilarityCalls=0
+    var selectedFallbackCounts=[0,0,0,0]
+    fileprivate func record(_ stage:String,since start:UInt64) {
+        stageMilliseconds[stage]=Double(DispatchTime.now().uptimeNanoseconds-start)/1_000_000
+    }
+}
+private func add(_ vector:RecommendationFeatures,to result:inout [String:Double],weight:Double) {
+    add(vector.values,to:&result,weight:weight)
 }
 private func add(_ vector:[String:Double],to result:inout [String:Double],weight:Double) {
     for (key,value) in vector { result[key,default:0] += value*weight }
@@ -92,7 +112,9 @@ struct RecommendationSnapshot {
     let playbackCooldowns:[String:Double]
     let modes:[String:AlbumListeningMode]
     let trackRows,historyRows,libraryRows,eventRows:[[String:String]]
-    func scored(limit:Int=10) -> [Recommendation] {
+    var rotation:RecommendationRotationContext?=nil
+    func scored(limit:Int=10,metrics:RecommendationMetrics?=nil) -> [Recommendation] {
+        var stageStart=DispatchTime.now().uptimeNanoseconds
         // Each scoring job owns its formatters; no formatter or archive crosses workers.
         let standard=ISO8601DateFormatter(),fractional=ISO8601DateFormatter()
         fractional.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
@@ -106,9 +128,10 @@ struct RecommendationSnapshot {
             if !artist.isEmpty { vector["artist:"+normalized(artist)]=3 }
             if !genre.isEmpty { vector["genre:"+normalized(genre)]=1 }
             if let key { vector[key]=0.5 }
-            var track=TasteTrack(id:id,title:r["title"] ?? "",artist:artist,album:album,catalogID:"",albumID:key,features:unit(vector),duration:Double(r["duration"] ?? "0") ?? 0)
+            var track=TasteTrack(id:id,title:r["title"] ?? "",artist:artist,album:album,catalogID:"",albumID:key,features:RecommendationFeatures(unit(vector)),duration:Double(r["duration"] ?? "0") ?? 0)
             track.feedback=feedback[id] ?? RecommendationFeedback();tracks[id]=track
         }
+        metrics?.record("trackConstruction",since:stageStart);stageStart=DispatchTime.now().uptimeNanoseconds
         let history=historyRows
         // Preserve canonical occurrences, but do not treat each song in an album run as an independent choice.
         var start=0
@@ -198,6 +221,7 @@ struct RecommendationSnapshot {
         }.map{$0.id})
         // A recently heard album cannot re-enter the batch via its component songs.
         let coolingAlbums=Set(prefersAlbum.filter { daysSince(evidence[$0]?.lastPlayed,now:now).map{$0<1} ?? false })
+        metrics?.record("historyEvidence",since:stageStart);stageStart=DispatchTime.now().uptimeNanoseconds
         var main:[String:Double]=[:],current:[String:Double]=[:]
         for track in tracks.values.sorted(by:{$0.id<$1.id}) where !track.feedback.less {
             if let key=track.albumID,(feedback[key]?.less ?? false) { continue }
@@ -226,13 +250,15 @@ struct RecommendationSnapshot {
         let negatives=tracks.values.filter{$0.feedback.less}.map{$0.features} + albums.filter{feedback[$0.id]?.less == true}.compactMap { a in a.tracks.first.flatMap{tracks[$0.id]?.features} }
         let maxFamiliarity=max(1,tracks.values.map{log1p($0.familiarity)}.max() ?? 1)
         let anchor=recent.last?.track
-        var scored:[Recommendation]=[],vectors:[String:[String:Double]]=[:]
-        func baseScore(features:[String:Double],familiarity:Double,liked:Bool,last:Date?,recentCount:Int,neighbor:Double) -> Double {
-            let established=0.5*similarity(features,long)+0.5*log1p(familiarity)/maxFamiliarity
+        let longFeatures=RecommendationFeatures(long),currentFeatures=RecommendationFeatures(current)
+        metrics?.record("tasteProfile",since:stageStart);stageStart=DispatchTime.now().uptimeNanoseconds
+        var scored:[Recommendation]=[],vectors:[String:RecommendationFeatures]=[:]
+        func baseScore(features:RecommendationFeatures,familiarity:Double,liked:Bool,last:Date?,recentCount:Int,neighbor:Double) -> Double {
+            let established=0.5*features.similarity(to:longFeatures)+0.5*log1p(familiarity)/maxFamiliarity
             let neglected=rediscovery(last,familiar:familiarity>=10 || liked,now:now)
             let transition=neighbor>=0.2 ? neighbor/(neighbor+2) : 0
-            let negative=negatives.map{similarity(features,$0)}.max() ?? 0
-            let value=(current.isEmpty ? 0.6 : 0.5)*established + 0.1*similarity(features,current) + 0.1*transition + 0.3*neglected + (liked ? 0.15 : 0) - 0.15*negative
+            let negative=negatives.map{features.similarity(to:$0)}.max() ?? 0
+            let value=(current.isEmpty ? 0.6 : 0.5)*established + 0.1*features.similarity(to:currentFeatures) + 0.1*transition + 0.3*neglected + (liked ? 0.15 : 0) - 0.15*negative
             return value*freshnessFactor(last,recentCount:recentCount,now:now)
         }
         func bucket(familiarity:Double,liked:Bool,last:Date?) -> String {
@@ -271,7 +297,8 @@ struct RecommendationSnapshot {
             for member in members { add(member.features,to:&features,weight:1/Double(members.count)) }
             features=unit(features)
             let neighbor=members.map{t in anchor.flatMap{transitions[$0]?[t.id]} ?? 0}.max() ?? 0
-            let score=baseScore(features:features,familiarity:familiarity,liked:state.liked,last:ev.lastPlayed,recentCount:ev.recentSessions,neighbor:neighbor)
+            let albumFeatures=RecommendationFeatures(features)
+            let score=baseScore(features:albumFeatures,familiarity:familiarity,liked:state.liked,last:ev.lastPlayed,recentCount:ev.recentSessions,neighbor:neighbor)
             guard score>0 else { continue }
             let category=bucket(familiarity:familiarity,liked:state.liked,last:ev.lastPlayed)
             let reason=category=="Rediscover" ? "An album you enjoy as a whole, last heard \(Int(daysSince(ev.lastPlayed,now:now)!)) days ago" :
@@ -281,28 +308,74 @@ struct RecommendationSnapshot {
             let issue=blocked ? "A song on this album is hidden by your feedback. Undo that feedback before playing the whole album." : album.playbackIssue
             scored.append(Recommendation(id:album.id,title:album.title,artist:album.artist,album:album.title,catalogID:"",reason:reason,
                 score:score,bucket:category,kind:.album,albumID:album.id,trackIDs:album.orderedTracks.map{$0.id},playbackIssue:issue))
-            vectors[album.id]=features
+            vectors[album.id]=albumFeatures
         }
-        scored.sort{$0.score==$1.score ? $0.id<$1.id : $0.score>$1.score}
-        var selected:[Recommendation]=[],artistCounts:[String:Int]=[:]
-        for index in 0..<max(0,limit) {
-            let desired=index<Int(Double(limit)*0.6) ? "Rediscover" : index<Int(Double(limit)*0.8) ? "Familiar" : "Explore your library"
-            let remaining=scored.filter { candidate in
-                !selected.contains { picked in picked.id==candidate.id || (candidate.albumID != nil && candidate.albumID==picked.albumID && (candidate.kind == .album || picked.kind == .album)) }
-            }
-            func choose(_ candidates:[Recommendation]) -> Recommendation? {
-                candidates.max { a,b in
-                    func adjusted(_ c:Recommendation) -> Double {
-                        let redundancy=selected.map{similarity(vectors[c.id] ?? [:],vectors[$0.id] ?? [:])}.max() ?? 0
-                        return c.score-0.12*redundancy
-                    }
-                    let av=adjusted(a),bv=adjusted(b);return av==bv ? a.id>b.id : av<bv
-                }
-            }
-            let diverse=remaining.filter{(artistCounts[normalized($0.artist)] ?? 0)<2 && normalized($0.artist) != selected.last.map{normalized($0.artist)}}
-            guard let pick=choose(diverse.filter{$0.bucket==desired}) ?? choose(remaining.filter{$0.bucket==desired && (artistCounts[normalized($0.artist)] ?? 0)<2}) ?? choose(diverse) ?? choose(remaining) else { break }
-            selected.append(pick);artistCounts[normalized(pick.artist),default:0] += 1
-        }
+        metrics?.record("candidateScoring",since:stageStart);stageStart=DispatchTime.now().uptimeNanoseconds
+        metrics?.candidateCount=scored.count
+        // A visible batch reserves playable choices; blocked albums remain available to generic diagnostics.
+        let eligible=rotation == nil ? scored : scored.filter{$0.playbackIssue==nil}
+        let selected=selectRecommendations(eligible,vectors:vectors,limit:limit,metrics:metrics,rotation:rotation,now:now)
+        metrics?.record("diversitySelection",since:stageStart)
         return selected
     }
+}
+
+// A candidate's maximum similarity only changes when a new item is selected.
+// Keep the candidate on the left, and preserve exact Double equality for ties.
+func selectRecommendations(_ scored:[Recommendation],vectors:[String:RecommendationFeatures],limit:Int,
+                           metrics:RecommendationMetrics?=nil,rotation:RecommendationRotationContext?=nil,now:Date=Date()) -> [Recommendation] {
+    struct Candidate {
+        let recommendation:Recommendation,artist:String,features:RecommendationFeatures
+        let exposure:RecommendationExposurePriority
+        var redundancy=0.0
+    }
+    var remaining=scored.sorted{$0.score==$1.score ? $0.id<$1.id : $0.score>$1.score}.map {
+        Candidate(recommendation:$0,artist:normalized($0.artist),features:vectors[$0.id] ?? RecommendationFeatures([:]),
+                  exposure:rotation?.priority($0,now:now) ?? RecommendationExposurePriority(generation:0,at:-.infinity))
+    }
+    var selected:[Recommendation]=[],artistCounts:[String:Int]=[:]
+    var lastArtist:String?
+    let eligible=Set(remaining.map{$0.recommendation.id})
+    var retained=(rotation?.retainedIDs ?? []).filter{eligible.contains($0)}
+    for index in 0..<max(0,limit) {
+        let desired=index<Int(Double(limit)*0.6) ? "Rediscover" : index<Int(Double(limit)*0.8) ? "Familiar" : "Explore your library"
+        var best:[Int?]=[nil,nil,nil,nil]
+        var retainedChoice:Int?
+        while !retained.isEmpty && retainedChoice==nil {
+            let id=retained.removeFirst()
+            retainedChoice=remaining.firstIndex(where:{$0.recommendation.id==id})
+        }
+        let exposure=rotation == nil ? nil : remaining.map{$0.exposure}.min()
+        for i in remaining.indices {
+            if let exposure,retainedChoice==nil && remaining[i].exposure != exposure { continue }
+            if let retainedChoice, i != retainedChoice { continue }
+            let c=remaining[i],underLimit=(artistCounts[c.artist] ?? 0)<2
+            let diverse=underLimit && c.artist != lastArtist
+            let tier=c.recommendation.bucket==desired && diverse ? 0 :
+                c.recommendation.bucket==desired && underLimit ? 1 : diverse ? 2 : 3
+            if let prior=best[tier] {
+                let a=c.recommendation.score-0.12*c.redundancy
+                let b=remaining[prior].recommendation.score-0.12*remaining[prior].redundancy
+                if a>b || (a==b && c.recommendation.id<remaining[prior].recommendation.id) { best[tier]=i }
+            } else { best[tier]=i }
+        }
+        guard let tier=best.firstIndex(where:{$0 != nil}),let chosen=best[tier] else { break }
+        metrics?.selectedFallbackCounts[tier] += 1
+        let pick=remaining[chosen]
+        selected.append(pick.recommendation);artistCounts[pick.artist,default:0] += 1;lastArtist=pick.artist
+        remaining.removeAll { candidate in
+            candidate.recommendation.id==pick.recommendation.id ||
+                (candidate.recommendation.albumID != nil && candidate.recommendation.albumID==pick.recommendation.albumID &&
+                 (candidate.recommendation.kind == .album || pick.recommendation.kind == .album))
+        }
+        // No next choice needs this update after the final slot.
+        if index+1<limit {
+            for i in remaining.indices {
+                let value=remaining[i].features.similarity(to:pick.features)
+                remaining[i].redundancy=max(remaining[i].redundancy,value)
+            }
+            metrics?.selectionSimilarityCalls += remaining.count
+        }
+    }
+    return selected
 }

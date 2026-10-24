@@ -32,6 +32,9 @@
 !/app-source/PlaybackScriptTests.js
 !/app-source/RecommendationTests.swift
 !/app-source/Recommendations.swift
+!/app-source/RecommendationRotation.swift
+!/app-source/RecommendationRotationTests.swift
+!/app-source/RecommendationReferenceTests.swift
 !/app-source/UnifiedHistory.swift
 !/app-source/build.sh
 !/app-source/main.swift

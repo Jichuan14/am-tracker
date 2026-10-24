@@ -258,6 +258,7 @@ func displayDate(_ string: String?) -> String {
     lazy var queueLatency=QueueLatencyTrace(folder:archive.folder)
     let suggestionQueue=DispatchQueue(label:"org.amtrack.app.suggestions",qos:.utility)
     var suggestionRequest=0
+    var suggestionAdvancePending=false
     var playedForYouIDs=Set<String>()
     @Published var automaticQueue=AutomaticQueue()
     var automaticQueueEpoch=0
@@ -349,7 +350,7 @@ func displayDate(_ string: String?) -> String {
             historyStatus=try archive.value("history_detail")
             historyChecked=displayDate(try archive.value("history_last_check"))
             if Date()>=nextRecommendations {
-                refreshSuggestions(background:true,log:false)
+                refreshSuggestions(background:true)
             }
         } catch { self.error = error.localizedDescription }
         onChange?()
@@ -436,26 +437,33 @@ func displayDate(_ string: String?) -> String {
             } catch { self.databaseStatus="Database check failed";self.error=error.localizedDescription;self.stop() }
         }
     }
-    func refreshSuggestions(background:Bool=true,log:Bool=true) {
+    func refreshSuggestions(background:Bool=true,intent:RecommendationRefreshIntent = .revalidate) {
+        if intent == .advance { suggestionAdvancePending=true }
         suggestionRequest += 1
         let request=suggestionRequest
         do {
-            if !background {
-                suggestions=try archive.recommendations(log:log);nextRecommendations=Date().addingTimeInterval(30);try updateAlbumOptions();return
-            }
-            let snapshot=try archive.recommendationSnapshot()
+            let snapshot=try archive.forYouSnapshot(intent:suggestionAdvancePending ? .advance : .revalidate)
             try updateAlbumOptions()
             nextRecommendations=Date().addingTimeInterval(30)
+            if !background {
+                try acceptSuggestions(snapshot.forYouResult(),request:request,at:snapshot.now)
+                return
+            }
             suggestionQueue.async {
-                let result=snapshot.scored()
+                let result=snapshot.forYouResult()
                 DispatchQueue.main.async {
-                    guard request==self.suggestionRequest else { return }
-                    self.suggestions=result
-                    do { if log { try self.archive.logRecommendations(result) } } catch { self.error=error.localizedDescription }
-                    self.onChange?()
+                    do { try self.acceptSuggestions(result,request:request,at:snapshot.now) }
+                    catch { self.error=error.localizedDescription;self.onChange?() }
                 }
             }
         } catch { self.error=error.localizedDescription }
+    }
+    func acceptSuggestions(_ result:RecommendationRotationResult,request:Int,at now:Date) throws {
+        // Check on the archive/main owner, and commit before publishing either list or generation.
+        guard request==suggestionRequest else { return }
+        try archive.commitForYouResult(result,at:now)
+        suggestions=result.items;suggestionAdvancePending=false
+        onChange?()
     }
     func updateAlbumOptions() throws {
         albumOptions=try archive.albumCollections()
@@ -700,6 +708,7 @@ func displayDate(_ string: String?) -> String {
                     self.error=""
                     if let libraryResult {
                         try self.recorder?.library(try libraryResult.get());self.nextLibrary=Date().addingTimeInterval(300)
+                        self.nextRecommendations = .distantPast
                     }
                     try self.archive.syncRecordingsAndLibrary(includeLibrary:false)
                     try self.archive.reconcile()
@@ -888,7 +897,7 @@ struct SuggestionsView:View {
                     .help("Keep one recommended song queued and prepare the following song ahead of time")
                 Button("Album preferences…") { showAlbumPreferences=true }
                 Button("Undo last feedback") { model.undoFeedback() }
-                Button("Refresh") { model.refreshSuggestions();model.refreshLibraryDetails(force:true);model.refreshMenuSong() }
+                Button("Refresh") { model.refreshSuggestions(intent:.advance);model.refreshLibraryDetails(force:true);model.refreshMenuSong() }
             }
             if model.automaticQueue.enabled {
                 HStack {
@@ -1156,7 +1165,7 @@ func selfTest() throws {
 @main struct AMTrackApplication {
     @MainActor static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            do { try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
+            do { try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")
         } else if CommandLine.arguments.contains("--upgrade-only") {

@@ -24,6 +24,8 @@ You can also check Music's `History.dat` manually to fill recording gaps. AM Tra
 
 **For you** recommends songs and albums from your saved library. It combines listening history, library play counts, recent listening, and your feedback to bring back old favorites alongside less-played music. Each recommendation includes a short reason. Songs known to have played in the last 24 hours are excluded.
 
+**Refresh** favors choices absent from the previous three batches within seven days. If fresh choices run out, the least recently shown items can return. The current batch survives restarts and background updates; playback and feedback replace ineligible items while keeping the remaining order.
+
 | Control | What it does |
 | --- | --- |
 | **Play** | Starts the selected song in Music. |
