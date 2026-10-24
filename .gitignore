@@ -1,0 +1,30 @@
+# Publish only the reviewed project files listed below.
+# Everything else stays local, including new data files and unknown formats.
+*
+
+# Repository metadata and documentation.
+!/.gitattributes
+!/.gitignore
+!/README.md
+
+# Source code, bundled scripts, and synthetic tests.
+!/app-source/
+!/app-source/Resources/
+!/app-source/AlbumTaste.swift
+!/app-source/BackgroundQueue.m
+!/app-source/CatalogScriptTests.js
+!/app-source/HistoryStore.swift
+!/app-source/HistoryTests.swift
+!/app-source/Info.plist
+!/app-source/MusicPlayback.swift
+!/app-source/MusicQueue.swift
+!/app-source/PlaybackScriptTests.js
+!/app-source/RecommendationTests.swift
+!/app-source/Recommendations.swift
+!/app-source/UnifiedHistory.swift
+!/app-source/build.sh
+!/app-source/main.swift
+!/app-source/Resources/catalog.js
+!/app-source/Resources/library.js
+!/app-source/Resources/play.js
+!/app-source/Resources/sample.js

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>AM Track</string>
+	<key>CFBundleExecutable</key>
+	<string>AMTrack</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.amtrack.app</string>
+	<key>CFBundleName</key>
+	<string>AM Track</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.7.0</string>
+	<key>CFBundleVersion</key>
+	<string>16</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>AM Track reads your current song, exact library identities and local song metadata to save listening history and resolve background queue additions. Play starts a selected library song or saved album. Next for you adds recommended catalog songs to Music’s queue without activating Music or changing playback. Automatic queueing adds replacements after songs finish or are skipped, and waits until album follow-ups are playing.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Personal local utility. Your listening history stays on this Mac.</string>
+</dict>
+</plist>
