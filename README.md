@@ -55,7 +55,7 @@ On an Apple Silicon Mac with Xcode Command Line Tools, run:
 ./scripts/package-release.sh
 ```
 
-This builds and tests the app, reconstructs a clean bundle from required files, and creates the app ZIP and SHA-256 checksum under `dist/`. Only the app and installation instructions go into the ZIP. Upload those two assets to a GitHub pre-release tagged `v2.9.0-beta.1`, using [the release notes](RELEASE-NOTES.md). Packaging does not submit anything to Apple.
+This builds and tests the app, reconstructs a clean bundle from required files, and creates the app ZIP and SHA-256 checksum under `dist/`. Only the app and installation instructions go into the ZIP. Upload those two assets to a GitHub pre-release tagged `v2.9.0-beta.2`, using [the release notes](RELEASE-NOTES.md). Packaging does not submit anything to Apple.
 
 ## Source layout
 

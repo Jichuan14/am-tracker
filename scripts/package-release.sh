@@ -11,7 +11,7 @@ fi
 "$source_root/build.sh"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$source_root/Info.plist")"
 [[ "$version" == <->.<->.<-> ]] || { print -u2 "Invalid app version."; exit 1; }
-asset="AM-Track-$version-beta.1-macOS-arm64.zip"
+asset="AM-Track-$version-beta.2-macOS-arm64.zip"
 stage_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp/}am-track-package.XXXXXX")"
 trap '/bin/rm -rf "$stage_root"' EXIT
 app_root="$stage_root/AM Track.app"

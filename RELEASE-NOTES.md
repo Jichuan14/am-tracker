@@ -1,13 +1,10 @@
-# AM Track 2.9.0 Beta 1
+# AM Track 2.9.0 Beta 2
 
-First downloadable beta for Apple Silicon Macs running macOS 13 or later.
+For Apple Silicon Macs running macOS 13 or later.
 
-1. **First launch:** Choose when Music access and local recording begin, with setup instructions and a link to Automation settings if permission is denied.
-2. **Your listening history:** Start with your own empty archive, import library metadata for recommendations, and record future listening while AM Track is running.
-3. **Remembered recording:** Reopening the app restores your recording choice; closing the window keeps it running in the menu bar.
-4. **Continuous playback:** Keep one recommended song queued next, prepare later choices locally, and continue from saved albums without waiting for a new ranking pass.
+1. **First launch:** Fixed an oversized setup window that could push the **Not now** and **Enable recording** buttons offscreen and prevent setup from continuing.
 
-Download `AM-Track-2.9.0-beta.1-macOS-arm64.zip`, unzip it, and move `AM Track.app` to Applications. The matching `.sha256` file contains its SHA-256 checksum. GitHub's automatically generated source-code archives require building the app yourself.
+Download `AM-Track-2.9.0-beta.2-macOS-arm64.zip`, quit AM Track, then unzip the download and replace the old `AM Track.app` in Applications. Your listening data stays in its existing data folder. The matching `.sha256` file contains the ZIP's SHA-256 checksum. GitHub's automatically generated source-code archives require building the app yourself.
 
 This beta is ad hoc signed and is **not notarized by Apple**. If macOS blocks opening it, follow the included installation guide and use **System Settings > Privacy & Security > Open Anyway** for AM Track if you trust the download. See [Apple's instructions](https://support.apple.com/102445).
 
