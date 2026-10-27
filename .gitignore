@@ -50,3 +50,13 @@
 !/app-source/BackgroundQueueTests.m
 !/app-source/PlaybackReadTests.js
 !/app-source/Resources/playback.js
+
+# Native interface and reproducible design previews.
+!/app-source/Interface.swift
+!/app-source/DesignPreview.swift
+!/DESIGN.md
+!/docs/DESIGN-VERIFICATION.md
+!/docs/images/dropdown.png
+!/docs/images/window-for-you.png
+!/docs/images/window-history.png
+!/docs/images/feedback-confirmation.png

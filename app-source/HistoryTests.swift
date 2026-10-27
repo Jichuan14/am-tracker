@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @MainActor func manualHistoryTests() throws {
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-manual-"+UUID().uuidString)
@@ -40,15 +41,29 @@ private func check(_ condition:Bool,_ message:String) throws {
     let pid=try model.archive.playbackIDs(for:outside.id).first!
     let current=Sample(["running":true,"state":"paused","title":outside.title,"artist":outside.artist,
         "album":outside.album,"persistent_id":pid])
+    model.menuSample=current
     model.rateCurrent(current,"like")
+    try check(model.currentSongFeedback.liked && !model.currentSongFeedback.less && model.songFeedback[outside.id]?.liked == true,"saved current-song like is immediately visible on the canonical recommendation identity")
+    try check(model.feedbackConfirmation?.kind == "like" && model.feedbackConfirmation?.title == current.title,"feedback confirmation identifies the rated song")
     let liked=try model.archive.recommendations(limit:100)
     try check(liked.first{$0.id==outside.id}!.score>outside.score,"liking a song outside For you changes its score with recording off")
     model.rateCurrent(current,"less")
+    try check(model.currentSongFeedback.less && !model.currentSongFeedback.liked,"dislike replaces the filled like state immediately")
     let less=try model.archive.recommendations(limit:100)
     try check(!less.contains{$0.id==outside.id},"less-like outside For you suppresses that song")
     try check(less.contains { song in liked.first{$0.id==song.id}.map{song.score<$0.score} ?? false },"less-like outside For you also lowers scores for similar music")
     model.undoFeedback()
     try check(try model.archive.recommendationFeedback(now:Date())[outside.id]?.liked==true,"undo restores the external song's like")
+    try check(model.currentSongFeedback.liked && model.feedbackConfirmation == nil,"Undo restores the visible like and clears the confirmation")
+    model.rateCurrent(current,"reset")
+    try check(!model.currentSongFeedback.liked && !model.currentSongFeedback.less,"a selected rating can be cleared")
+    model.undoFeedback()
+    model.menuSample=Sample(["running":true,"state":"paused","title":current.title,"artist":current.artist,"persistent_id":"FFFFFFFFFFFFFFFF"])
+    try check(!model.currentSongFeedback.liked && !model.currentSongFeedback.less,"same-title songs never inherit another identity's visible preference")
+    model.menuSample=current
+    try check(model.currentSongFeedback.liked,"returning to a rated song restores its saved visual state")
+    model.songFeedback=[:];try model.refreshFeedback()
+    try check(model.currentSongFeedback.liked && model.songFeedback[outside.id]?.liked == true,"visible feedback rehydrates from the archive")
     let selected=model.suggestions.first{$0.id != outside.id}!,ids=try model.archive.playbackIDs(for:selected.id)
     let before=model.suggestions.map{$0.id}
     let ratingsBefore=try model.archive.rows("SELECT * FROM recommendation_feedback").count
@@ -513,4 +528,63 @@ func maintenance(_ folder:URL) throws {
     try check(!model.resumeRecordingOnLaunch && model.collectionEnabled,"explicit Stop is remembered while library access remains enabled")
     try check(try stored.rows("SELECT * FROM sessions").isEmpty,"shutdown and setup do not create listening events")
     print("PASS: first-launch consent, Not now, no pre-consent Music reads, empty archive, persisted choices, quit versus Stop and no fabricated events.")
+}
+
+
+@MainActor func menuLayoutTests() throws {
+    _ = NSApplication.shared
+    let backdrop = NSVisualEffectView()
+    backdrop.material = .menu
+    backdrop.blendingMode = .behindWindow
+    let selection = NSVisualEffectView()
+    selection.material = .selection
+    backdrop.addSubview(selection)
+    useSolidMenuBackground(in: backdrop)
+    try check(backdrop.material == .windowBackground && backdrop.blendingMode == .withinWindow,
+              "menu background uses an opaque material without sampling windows behind it")
+    try check(selection.material == .selection, "native selection material is preserved")
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("am-track-menu-layout-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let model = try Model(folder: folder)
+    model.suggestionRequest += 1
+    model.nextRecommendations = .distantFuture
+    let controller = AppDelegate()
+    controller.model = model
+    controller.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    defer { NSStatusBar.system.removeStatusItem(controller.item) }
+    for message in ["Started Comfortably Numb in Music. Queued 1 recommendation.", String(repeating: "很长的播放状态 WWW ", count: 12)] {
+        model.playbackMessage = message
+        model.error = message
+        model.suggestions = [Recommendation(id: "layout-song", title: String(repeating: "很长的歌曲 WWW ", count: 12), artist: "Artist", album: "Album", catalogID: "", reason: "Layout fixture", score: 1, bucket: "favorite", kind: .song, albumID: nil, trackIDs: ["layout-song"], playbackIssue: nil)]
+        controller.updateMenu()
+        guard let menu = controller.item.menu else { throw AppError(message: "Missing layout test menu") }
+        menu.update()
+        print("Menu layout width: \(menu.size.width)")
+        try check(abs(menu.size.width - 340) < 1, "long status, errors and recommendations must keep the menu at 340 points")
+        try check(menu.items.contains { $0.toolTip == message }, "fitted status retains its full tooltip")
+        let list = menu.items.compactMap { $0.view as? MenuRecommendationsView }.first
+        try check(list?.songs.first?.id == "layout-song", "fitting does not change recommendation identity")
+        try check(!menu.items.contains { $0.title == "Browse all recommendations…" }, "recommendations stay in the dropdown")
+        if let song = model.suggestions.first {
+            let scroll = MenuRecommendationsView(songs: Array(repeating: song, count: 20), feedback: [:], playbackBusy: false, play: { _ in })
+            scroll.layoutSubtreeIfNeeded()
+            try check(scroll.table.numberOfRows == 20 && scroll.frame.height == 220, "complete batch fits a bounded five-row viewport")
+            try check((scroll.table.tableColumns.first?.width ?? 0) >= Interface.menuWidth - 2,
+                      "recommendation column must fill the dropdown rather than keep AppKit's narrow default")
+            guard let cell = scroll.tableView(scroll.table, viewFor: scroll.table.tableColumns.first, row: 0) as? NSTableCellView else {
+                throw AppError(message: "Missing recommendation cell")
+            }
+            let labels = cell.subviews.compactMap { $0 as? NSTextField }
+            try check(labels.count == 2 && labels[0].stringValue == song.title && labels[1].stringValue == song.artist,
+                      "dropdown rows keep title and artist in separate labels")
+            try check(labels.allSatisfy { $0.maximumNumberOfLines == 1 && $0.lineBreakMode == .byTruncatingTail && $0.cell?.wraps == false },
+                      "long titles and artists truncate on their own line instead of wrapping")
+            cell.frame = NSRect(x: 0, y: 0, width: Interface.menuWidth, height: 44)
+            cell.layoutSubtreeIfNeeded()
+            try check(labels.allSatisfy { $0.frame.width >= 270 }, "both text lines use the available row width")
+            scroll.table.scrollRowToVisible(19)
+            try check(scroll.contentView.bounds.minY > 0, "later recommendations can scroll into view")
+        }
+    }
+    print("PASS: narrow native menu with long English/CJK messages and recommendation identities.")
 }
