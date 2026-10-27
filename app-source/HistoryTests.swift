@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @MainActor func manualHistoryTests() throws {
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-manual-"+UUID().uuidString)
@@ -527,4 +528,63 @@ func maintenance(_ folder:URL) throws {
     try check(!model.resumeRecordingOnLaunch && model.collectionEnabled,"explicit Stop is remembered while library access remains enabled")
     try check(try stored.rows("SELECT * FROM sessions").isEmpty,"shutdown and setup do not create listening events")
     print("PASS: first-launch consent, Not now, no pre-consent Music reads, empty archive, persisted choices, quit versus Stop and no fabricated events.")
+}
+
+
+@MainActor func menuLayoutTests() throws {
+    _ = NSApplication.shared
+    let backdrop = NSVisualEffectView()
+    backdrop.material = .menu
+    backdrop.blendingMode = .behindWindow
+    let selection = NSVisualEffectView()
+    selection.material = .selection
+    backdrop.addSubview(selection)
+    useSolidMenuBackground(in: backdrop)
+    try check(backdrop.material == .windowBackground && backdrop.blendingMode == .withinWindow,
+              "menu background uses an opaque material without sampling windows behind it")
+    try check(selection.material == .selection, "native selection material is preserved")
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("am-track-menu-layout-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let model = try Model(folder: folder)
+    model.suggestionRequest += 1
+    model.nextRecommendations = .distantFuture
+    let controller = AppDelegate()
+    controller.model = model
+    controller.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    defer { NSStatusBar.system.removeStatusItem(controller.item) }
+    for message in ["Started Comfortably Numb in Music. Queued 1 recommendation.", String(repeating: "很长的播放状态 WWW ", count: 12)] {
+        model.playbackMessage = message
+        model.error = message
+        model.suggestions = [Recommendation(id: "layout-song", title: String(repeating: "很长的歌曲 WWW ", count: 12), artist: "Artist", album: "Album", catalogID: "", reason: "Layout fixture", score: 1, bucket: "favorite", kind: .song, albumID: nil, trackIDs: ["layout-song"], playbackIssue: nil)]
+        controller.updateMenu()
+        guard let menu = controller.item.menu else { throw AppError(message: "Missing layout test menu") }
+        menu.update()
+        print("Menu layout width: \(menu.size.width)")
+        try check(abs(menu.size.width - 340) < 1, "long status, errors and recommendations must keep the menu at 340 points")
+        try check(menu.items.contains { $0.toolTip == message }, "fitted status retains its full tooltip")
+        let list = menu.items.compactMap { $0.view as? MenuRecommendationsView }.first
+        try check(list?.songs.first?.id == "layout-song", "fitting does not change recommendation identity")
+        try check(!menu.items.contains { $0.title == "Browse all recommendations…" }, "recommendations stay in the dropdown")
+        if let song = model.suggestions.first {
+            let scroll = MenuRecommendationsView(songs: Array(repeating: song, count: 20), feedback: [:], playbackBusy: false, play: { _ in })
+            scroll.layoutSubtreeIfNeeded()
+            try check(scroll.table.numberOfRows == 20 && scroll.frame.height == 220, "complete batch fits a bounded five-row viewport")
+            try check((scroll.table.tableColumns.first?.width ?? 0) >= Interface.menuWidth - 2,
+                      "recommendation column must fill the dropdown rather than keep AppKit's narrow default")
+            guard let cell = scroll.tableView(scroll.table, viewFor: scroll.table.tableColumns.first, row: 0) as? NSTableCellView else {
+                throw AppError(message: "Missing recommendation cell")
+            }
+            let labels = cell.subviews.compactMap { $0 as? NSTextField }
+            try check(labels.count == 2 && labels[0].stringValue == song.title && labels[1].stringValue == song.artist,
+                      "dropdown rows keep title and artist in separate labels")
+            try check(labels.allSatisfy { $0.maximumNumberOfLines == 1 && $0.lineBreakMode == .byTruncatingTail && $0.cell?.wraps == false },
+                      "long titles and artists truncate on their own line instead of wrapping")
+            cell.frame = NSRect(x: 0, y: 0, width: Interface.menuWidth, height: 44)
+            cell.layoutSubtreeIfNeeded()
+            try check(labels.allSatisfy { $0.frame.width >= 270 }, "both text lines use the available row width")
+            scroll.table.scrollRowToVisible(19)
+            try check(scroll.contentView.bounds.minY > 0, "later recommendations can scroll into view")
+        }
+    }
+    print("PASS: narrow native menu with long English/CJK messages and recommendation identities.")
 }

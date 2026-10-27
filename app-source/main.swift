@@ -222,7 +222,17 @@ func displayDate(_ string: String?) -> String {
     @Published var playbackError=""
     @Published var songFeedback:[String:RecommendationFeedback]=[:]
     @Published var currentSongFeedback=RecommendationFeedback()
-    @Published var feedbackConfirmation:FeedbackConfirmation?
+    @Published var feedbackConfirmation:FeedbackConfirmation? {
+        didSet {
+            guard let confirmation=feedbackConfirmation else { return }
+            DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in
+                // An older receipt must not dismiss feedback from a later click.
+                guard let self,self.feedbackConfirmation?.id==confirmation.id else { return }
+                self.feedbackConfirmation=nil
+                self.onChange?()
+            }
+        }
+    }
     @Published var menuSample:Sample? {
         didSet { currentSongFeedback=menuSample.map { feedback(for:$0) } ?? RecommendationFeedback() }
     }
@@ -516,7 +526,7 @@ func displayDate(_ string: String?) -> String {
             let title=suggestions.first{$0.id==id}?.title ?? history.first{$0.trackID==id}?.title ?? albumOptions.first{$0.id==id}?.title ?? (try? archive.rows("SELECT title FROM music_tracks WHERE id=?",[id]))?.first?["title"] ?? "Selection"
             try archive.feedback(id,kind)
             try refreshFeedback()
-            feedbackConfirmation=FeedbackConfirmation(title:title,kind:kind)
+            feedbackConfirmation=FeedbackConfirmation(title:title,kind:kind,targetID:id)
             refreshSuggestions();onChange?()
         } catch { self.error=error.localizedDescription }
     }
@@ -562,7 +572,7 @@ func displayDate(_ string: String?) -> String {
         do {
             try archive.feedbackForCurrentSong(current,kind)
             try refreshFeedback()
-            feedbackConfirmation=FeedbackConfirmation(title:current.title,kind:kind)
+            feedbackConfirmation=FeedbackConfirmation(title:current.title,kind:kind,targetID:"persistent:"+(current.musicPersistentID ?? ""))
             playbackError="";refreshSuggestions()
         } catch { playbackError=error.localizedDescription }
         onChange?()
@@ -832,10 +842,14 @@ func displayDate(_ string: String?) -> String {
         // Keep recommendation rows stable beneath the pointer until the menu closes.
         guard !statusMenuIsOpen else { return }
         let menu=item.menu ?? NSMenu();menu.delegate=self;menu.autoenablesItems=false;menu.removeAllItems()
-        menu.minimumWidth=340
+        menu.minimumWidth=Interface.menuWidth
         @discardableResult func add(_ title:String,_ action:Selector?=nil,_ key:String="",symbol:String?=nil) -> NSMenuItem {
             let entry=menu.addItem(withTitle:title,action:action,keyEquivalent:key)
             entry.target=self;entry.isEnabled=action != nil
+            let font=menu.font ?? NSFont.menuFont(ofSize:0)
+            let fitted=menuFittedText(title,font:font,width:Interface.menuTextWidth)
+            entry.attributedTitle=NSAttributedString(string:fitted,attributes:[.font:font])
+            if fitted != title { entry.toolTip=title }
             if let symbol {
                 entry.image=NSImage(systemSymbolName:symbol,accessibilityDescription:nil)
                 entry.image?.isTemplate=true
@@ -843,17 +857,22 @@ func displayDate(_ string: String?) -> String {
             return entry
         }
         let heading=NSMenuItem()
-        let headingView=NSHostingView(rootView:MenuHeading(sample:model.menuSample,recording:model.recording))
+        let headingView=MenuHeadingHostingView(rootView:MenuHeading(sample:model.menuSample,recording:model.recording))
         headingView.frame=NSRect(origin:.zero,size:headingView.fittingSize)
         heading.view=headingView;menu.addItem(heading)
         if !model.error.isEmpty {
-            let entry=add(menuFittedText(model.error,font:.menuFont(ofSize:12),width:300))
+            let entry=add(model.error)
             entry.toolTip=model.error
         }
         if !model.playbackError.isEmpty || !model.playbackMessage.isEmpty {
             let message=model.playbackError.isEmpty ? model.playbackMessage : model.playbackError
-            let entry=add(menuFittedText(message,font:.menuFont(ofSize:12),width:300))
+            let entry=add(message)
             entry.toolTip=message
+        }
+        if let confirmation=model.feedbackConfirmation {
+            let receipt=add(confirmation.message,symbol:confirmation.symbol)
+            receipt.toolTip=confirmation.message
+            add("Undo feedback",#selector(undoFeedback),symbol:"arrow.uturn.backward")
         }
         menu.addItem(.separator())
         let nextEntry=add(model.playbackTrackID == nil ? "Next for you" : "Updating Music…",#selector(nextForYou),symbol:"text.line.first.and.arrowtriangle.forward")
@@ -862,8 +881,7 @@ func displayDate(_ string: String?) -> String {
         if model.automaticQueue.enabled { add("Stop auto queue",#selector(stopAutomaticQueue),symbol:"stop.circle") }
         if let current=model.menuSample,current.musicPersistentID != nil {
             let state=model.feedback(for:current)
-            let like=add(state.liked ? "Remove like" : "Like current song",#selector(likeCurrent(_:)),symbol:state.liked ? "heart.fill" : "heart");like.representedObject=current
-            like.state=state.liked ? .on : .off
+            let like=add("Like current song",#selector(likeCurrent(_:)),symbol:"heart");like.representedObject=current
             let less=add(state.less ? "Remove dislike" : "Less like this",#selector(lessLikeCurrent(_:)),symbol:state.less ? "hand.thumbsdown.fill" : "hand.thumbsdown");less.representedObject=current
             less.state=state.less ? .on : .off
         }
@@ -874,17 +892,14 @@ func displayDate(_ string: String?) -> String {
             add("For you")
         }
         if model.suggestions.isEmpty { add(model.libraryDetailsBusy ? "Updating your library…" : "No recommendations yet") }
-        // Keep the dropdown glanceable; the window holds the complete batch.
-        for song in model.suggestions.prefix(5) {
-            let entry=add(song.title+" · "+song.artist,#selector(playRecommendation(_:)))
-            entry.attributedTitle=menuRecommendationTitle(song,feedback:model.songFeedback[song.id])
-            entry.representedObject=song
-            entry.image=NSImage(systemSymbolName:song.kind == .album ? "square.stack" : "music.note",accessibilityDescription:song.kind == .album ? "Album" : "Song")
-            entry.image?.isTemplate=true
-            entry.toolTip=song.title+" · "+song.artist+"\n"+(song.playbackIssue ?? (song.kind == .album ? "Play saved songs in album order. " : "Play this library song. ")+song.reason)
-            entry.isEnabled=model.playbackTrackID == nil && song.playbackIssue == nil
+        if !model.suggestions.isEmpty {
+            let recommendations=NSMenuItem()
+            recommendations.view=MenuRecommendationsView(songs:model.suggestions,feedback:model.songFeedback,playbackBusy:model.playbackTrackID != nil) { [weak self, weak menu] song in
+                menu?.cancelTracking()
+                self?.model.play(song)
+            }
+            menu.addItem(recommendations)
         }
-        add("Browse all recommendations…",#selector(showSuggestions),symbol:"arrow.up.right.square")
         menu.addItem(.separator())
         add("Show app window",#selector(showHistory),"0",symbol:"macwindow")
         add(model.recording ? "Stop recording" : "Start recording",#selector(toggle),symbol:model.recording ? "pause.circle" : "record.circle")
@@ -904,8 +919,9 @@ func displayDate(_ string: String?) -> String {
     @objc func playRecommendation(_ sender:NSMenuItem) {
         if let song=sender.representedObject as? Recommendation { model.play(song) }
     }
-    @objc func likeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,model.feedback(for:current).liked ? "reset" : "like") } }
+    @objc func likeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,"like") } }
     @objc func lessLikeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,model.feedback(for:current).less ? "reset" : "less") } }
+    @objc func undoFeedback() { model.undoFeedback() }
     @objc func nextForYou() { model.nextForYou() }
     @objc func stopAutomaticQueue() { model.stopAutomaticQueue() }
     @objc func showHistory() { window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true) }
@@ -966,7 +982,7 @@ func selfTest() throws {
             app.delegate=preview;app.run()
             withExtendedLifetime(preview) {}
         } else if CommandLine.arguments.contains("--self-test") {
-            do { try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
+            do { try menuLayoutTests();try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")
         } else if CommandLine.arguments.contains("--upgrade-only") {

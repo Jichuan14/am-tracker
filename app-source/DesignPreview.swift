@@ -66,21 +66,29 @@ import SwiftUI
             NSApp.mainMenu?.items.first?.submenu?.insertItem(previewItem,at:0)
             show(model, tab: 4, size: NSSize(width: 1100, height: 680), dark: false)
             // Capture after AppKit finishes activating the app and native controls.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                do {
-                    try self.renderAll(model)
-                    if self.keepOpen {
-                        self.show(model, tab: 4, size: NSSize(width: 1100, height: 680), dark: self.dark)
-                        self.controller.showHistory()
-                    } else {
-                        NSStatusBar.system.removeStatusItem(self.controller.item)
-                        try? FileManager.default.removeItem(at: self.folder)
-                        NSApp.terminate(nil)
-                    }
-                } catch {
-                    fputs("Design preview failed: \(error)\n", stderr)
-                    NSApp.terminate(nil)
-                }
+            perform(#selector(renderPreview), with: nil, afterDelay: 0.4)
+        } catch {
+            fputs("Design preview failed: \(error)\n", stderr)
+            NSApp.terminate(nil)
+        }
+    }
+
+    @objc private func renderPreview() {
+        let model = controller.model!
+        let previewSongs = model.suggestions
+        do {
+            try renderAll(model)
+            if keepOpen {
+                // Feedback expiry can start a ranking pass during the renders.
+                model.suggestionRequest += 1
+                model.suggestions = previewSongs
+                model.nextRecommendations = .distantFuture
+                show(model, tab: 4, size: NSSize(width: 1100, height: 680), dark: dark)
+                controller.showHistory()
+            } else {
+                NSStatusBar.system.removeStatusItem(controller.item)
+                try? FileManager.default.removeItem(at: folder)
+                NSApp.terminate(nil)
             }
         } catch {
             fputs("Design preview failed: \(error)\n", stderr)
@@ -132,6 +140,18 @@ import SwiftUI
                 }
             }
         }
+        // Saved likes stay invisible until a new click creates a short-lived receipt.
+        show(model, tab: 4, size: NSSize(width: 888, height: 462), dark: false)
+        try save("like-before")
+        model.feedbackConfirmation = FeedbackConfirmation(title: "I Know the End", kind: "like", targetID: "preview-0")
+        show(model, tab: 4, size: NSSize(width: 888, height: 462), dark: false)
+        try save("like-confirmation")
+        RunLoop.current.run(until: Date().addingTimeInterval(3.1))
+        guard model.feedbackConfirmation == nil, model.songFeedback["preview-0"]?.liked == true else {
+            throw AppError(message: "Like confirmation must expire without clearing saved preference.")
+        }
+        show(model, tab: 4, size: NSSize(width: 888, height: 462), dark: false)
+        try save("like-after")
         model.feedbackConfirmation = FeedbackConfirmation(title: "This Must Be the Place (Naive Melody)", kind: "less")
         show(model, tab: 4, size: NSSize(width: 888, height: 462), dark: false)
         try save("feedback-confirmation")

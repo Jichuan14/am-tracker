@@ -12,6 +12,8 @@ Use the Apple system font with native CJK fallback. Page titles: 23 pt semibold.
 ## Components
 Keep native buttons, menus, segmented navigation, table, search, and disclosure controls. Their press, focus, and disabled feedback come from AppKit and SwiftUI. A song row has Play, Like, and a labeled accessibility menu containing Not now, Less like this, and Find in Music. The single prominent action is Next for you. The current-song feedback menu is available from either page.
 
+The dropdown stays at 340 pt, fitting displayed menu text within native gutters and retaining complete text in tooltips. The header and commands share a solid, theme-aware window-background material, with within-window blending so pages behind the dropdown do not tint it.
+
 The dropdown uses a non-interactive playback heading followed by real NSMenuItems. Recommendation rows have a title and artist line; album rows explicitly name their type. The first five recommendations fit a quick scan. Browse all recommendations opens the complete batch. Keep recommendation identities stable while the menu is open.
 
 ## Layout
@@ -39,12 +41,13 @@ Use `Interface.swift` for visual changes and its semantic tokens for surfaces. K
 ## Song preference feedback
 
 Like and Less like this sit together as direct icon buttons on the current song
-and recommendation rows. A saved Like uses a filled pink heart with a faint
-pink background. Less like this uses a filled warm-brown thumbs-down and matching
-background. Shape and accessibility selected state carry meaning alongside color.
-Clicking a selected preference clears it. History rows show a small matching
-mark, and the dropdown shows checked current-song commands and a Liked subtitle.
-A footer confirmation names the affected song and offers Undo, including when a
-negative preference removes the row. Read saved state from canonical track IDs;
-never infer a rating from a title or automatic playback. Native press feedback
-is immediate, with no added animation.
+and recommendation rows. Like is a feedback action: a new click briefly fills
+the heart pink and shows a song-specific footer receipt with Undo for three
+seconds, then returns to an outline. Saved likes continue to influence ranking
+but never leave persistent hearts in history, recommendation subtitles, or
+current-song menu commands. Repeating Like sends positive feedback again;
+it does not clear the saved preference. Less like this keeps its selected
+warm-brown treatment and can be cleared by pressing it again. Native menu
+receipts offer Undo while available; menu rows stay stable until dismissal.
+Each receipt has an identity so an earlier expiry cannot dismiss a later click.
+Native press feedback is immediate, with no added animation.

@@ -3,6 +3,9 @@ import SwiftUI
 
 // Shared native surfaces. Semantic colors follow the Mac's appearance and accent.
 enum Interface {
+    static let menuWidth: CGFloat = 340
+    // Reserve native state, icon, keyboard-shortcut and edge columns.
+    static let menuTextWidth: CGFloat = menuWidth - 110
     static let inset: CGFloat = 24
     static let radius: CGFloat = 10
     static let canvas = Color(nsColor: .windowBackgroundColor)
@@ -159,7 +162,8 @@ struct HistoryView: View {
             NowPlayingSummary(sample: model.menuSample ?? model.sample)
             if let current = model.menuSample, current.musicPersistentID != nil {
                 SongFeedbackButtons(title: current.title, feedback: model.currentSongFeedback,
-                    like: { model.rateCurrent(current, model.currentSongFeedback.liked ? "reset" : "like") },
+                    likeConfirmed: model.feedbackConfirmation?.isLike(for: "persistent:" + (current.musicPersistentID ?? "")) == true,
+                    like: { model.rateCurrent(current, "like") },
                     dislike: { model.rateCurrent(current, model.currentSongFeedback.less ? "reset" : "less") })
             }
             Divider().frame(height: 36)
@@ -207,8 +211,8 @@ struct HistoryView: View {
                         Text(row.title).fontWeight(.medium).help(row.title)
                         FeedbackMark(feedback: model.songFeedback[row.trackID] ?? RecommendationFeedback())
                     }.contextMenu {
-                        Button(model.songFeedback[row.trackID]?.liked == true ? "Remove like" : "Like") {
-                            model.rate(row.trackID, model.songFeedback[row.trackID]?.liked == true ? "reset" : "like")
+                        Button("Like") {
+                            model.rate(row.trackID, "like")
                         }
                         Button("Not now") { model.rate(row.trackID, "later") }
                         Button(model.songFeedback[row.trackID]?.less == true ? "Remove dislike" : "Less like this") {
@@ -350,7 +354,8 @@ struct RecommendationRow: View {
                 }.disabled(model.playbackTrackID != nil || song.playbackIssue != nil)
                     .accessibilityLabel("Play \(song.title) by \(song.artist) in Music")
                 SongFeedbackButtons(title: song.title, feedback: model.songFeedback[song.id] ?? RecommendationFeedback(),
-                    like: { model.rate(song.id, model.songFeedback[song.id]?.liked == true ? "reset" : "like") },
+                    likeConfirmed: model.feedbackConfirmation?.isLike(for: song.id) == true,
+                    like: { model.rate(song.id, "like") },
                     dislike: { model.rate(song.id, model.songFeedback[song.id]?.less == true ? "reset" : "less") })
                 Menu {
                     Button("Not now") { model.rate(song.id, "later") }
@@ -398,8 +403,7 @@ struct AlbumPreferencesView: View {
     }
 }
 
-// A non-interactive menu heading keeps commands as real NSMenuItems, preserving
-// arrow-key navigation, type selection, VoiceOver, and native highlighted rows.
+// The heading leaves the menu's standard commands as native NSMenuItems.
 struct MenuHeading: View {
     let sample: Sample?
     let recording: Bool
@@ -411,7 +415,124 @@ struct MenuHeading: View {
                 RecordingIndicator(recording: recording)
             }
             NowPlayingSummary(sample: sample, compact: true)
-        }.padding(16).frame(width: 340).background(Interface.canvas)
+        }.padding(16).frame(width: Interface.menuWidth)
+    }
+}
+
+// Keep the native menu commands and selection drawing, but use an opaque
+// semantic material instead of sampling other windows behind the dropdown.
+@MainActor func useSolidMenuBackground(in view: NSView) {
+    if let effect = view as? NSVisualEffectView, effect.material == .menu {
+        effect.material = .windowBackground
+        effect.blendingMode = .withinWindow
+        effect.wantsLayer = true
+        effect.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+    for child in view.subviews { useSolidMenuBackground(in: child) }
+}
+
+final class MenuHeadingHostingView: NSHostingView<MenuHeading> {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Menu views attach only when opened. Do not change the system window.
+        if let content = window?.contentView { useSolidMenuBackground(in: content) }
+    }
+}
+
+// Keep the complete batch inside a five-row viewport so menu commands stay put.
+final class MenuRecommendationsView: NSScrollView, NSTableViewDataSource, NSTableViewDelegate {
+    let songs: [Recommendation]
+    private let feedback: [String: RecommendationFeedback]
+    private let playbackBusy: Bool
+    private let play: (Recommendation) -> Void
+    let table = MenuRecommendationsTable()
+
+    init(songs: [Recommendation], feedback: [String: RecommendationFeedback], playbackBusy: Bool, play: @escaping (Recommendation) -> Void) {
+        self.songs = songs; self.feedback = feedback; self.playbackBusy = playbackBusy; self.play = play
+        super.init(frame: NSRect(x: 0, y: 0, width: Interface.menuWidth, height: CGFloat(min(songs.count, 5)) * 44))
+        drawsBackground = false
+        hasVerticalScroller = true
+        autohidesScrollers = false
+        scrollerStyle = .overlay
+        borderType = .noBorder
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recommendation"))
+        column.minWidth = Interface.menuWidth
+        column.width = Interface.menuWidth
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.rowHeight = 44
+        table.intercellSpacing = .zero
+        table.backgroundColor = .clear
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        table.selectionHighlightStyle = .regular
+        table.allowsEmptySelection = true
+        table.dataSource = self; table.delegate = self
+        table.target = self; table.action = #selector(activateClickedRow)
+        table.activate = { [weak self] in
+            guard let self else { return }
+            self.activate(row: self.table.selectedRow)
+        }
+        table.setAccessibilityLabel("For you recommendations")
+        table.frame = NSRect(x: 0, y: 0, width: Interface.menuWidth, height: CGFloat(songs.count) * 44)
+        table.autoresizingMask = [.width]
+        documentView = table
+        table.reloadData()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func numberOfRows(in tableView: NSTableView) -> Int { songs.count }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        !playbackBusy && songs[row].playbackIssue == nil
+    }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let song = songs[row]
+        let cell = NSTableCellView()
+        let symbol = NSImageView()
+        symbol.image = NSImage(systemSymbolName: song.kind == .album ? "square.stack" : "music.note", accessibilityDescription: song.kind == .album ? "Album" : "Song")
+        symbol.contentTintColor = .secondaryLabelColor
+        let title = NSTextField(labelWithString: song.title.replacingOccurrences(of: "\n", with: " "))
+        let artist = NSTextField(labelWithString: song.artist.replacingOccurrences(of: "\n", with: " "))
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        artist.font = .systemFont(ofSize: 11)
+        let disabled = playbackBusy || song.playbackIssue != nil
+        title.textColor = disabled ? .disabledControlTextColor : .labelColor
+        artist.textColor = disabled ? .disabledControlTextColor : .secondaryLabelColor
+        for label in [title, artist] {
+            label.maximumNumberOfLines = 1
+            label.lineBreakMode = .byTruncatingTail
+            label.cell?.wraps = false
+            label.cell?.isScrollable = false
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        for view in [symbol, title, artist] { view.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(view) }
+        cell.textField = title; cell.imageView = symbol
+        NSLayoutConstraint.activate([
+            symbol.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 18),
+            symbol.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            symbol.widthAnchor.constraint(equalToConstant: 16),
+            title.leadingAnchor.constraint(equalTo: symbol.trailingAnchor, constant: 10),
+            title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -22),
+            title.topAnchor.constraint(equalTo: cell.topAnchor, constant: 5),
+            artist.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            artist.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            artist.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 2)
+        ])
+        cell.toolTip = song.title + " · " + song.artist + "\n" + (song.playbackIssue ?? song.reason)
+        return cell
+    }
+    @objc private func activateClickedRow() { activate(row: table.clickedRow) }
+    private func activate(row: Int) {
+        guard songs.indices.contains(row), !playbackBusy, songs[row].playbackIssue == nil else { return }
+        play(songs[row])
+    }
+}
+
+final class MenuRecommendationsTable: NSTableView {
+    var activate: (() -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76 || event.characters == " " { activate?() }
+        else { super.keyDown(with: event) }
     }
 }
 
@@ -432,18 +553,21 @@ func menuFittedText(_ text: String, font: NSFont, width: CGFloat) -> String {
 func menuRecommendationTitle(_ song: Recommendation, feedback: RecommendationFeedback? = nil) -> NSAttributedString {
     let titleFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     let subtitleFont = NSFont.systemFont(ofSize: 11)
-    let title = menuFittedText(song.title, font: titleFont, width: 286)
-    let preference = feedback?.liked == true ? "♥ Liked · " : feedback?.less == true ? "Less like this · " : ""
+    let title = menuFittedText(song.title, font: titleFont, width: Interface.menuTextWidth)
+    let preference = feedback?.less == true ? "Less like this · " : ""
     let detail = preference + song.artist + (song.kind == .album ? " · Album · \(song.trackIDs.count) tracks" : "")
     let result = NSMutableAttributedString(string: title, attributes: [.font: titleFont])
-    result.append(NSAttributedString(string: "\n" + menuFittedText(detail, font: subtitleFont, width: 286), attributes: [.font: subtitleFont]))
+    result.append(NSAttributedString(string: "\n" + menuFittedText(detail, font: subtitleFont, width: Interface.menuTextWidth), attributes: [.font: subtitleFont]))
     return result
 }
 
 
 struct FeedbackConfirmation {
+    let id = UUID()
     let title: String
     let kind: String
+    var targetID: String? = nil
+    func isLike(for target: String) -> Bool { kind == "like" && targetID == target }
     var message: String {
         switch kind {
         case "like": return "Liked: " + title
@@ -460,11 +584,11 @@ struct FeedbackConfirmation {
 struct FeedbackMark: View {
     let feedback: RecommendationFeedback
     var body: some View {
-        if feedback.liked || feedback.less {
-            Image(systemName: feedback.liked ? "heart.fill" : "hand.thumbsdown.fill")
-                .font(.system(size: 11)).foregroundStyle(feedback.liked ? Color.pink : Color(nsColor: .systemBrown))
-                .help(feedback.liked ? "Liked" : "Less like this")
-                .accessibilityLabel(feedback.liked ? "Liked" : "Less like this")
+        if feedback.less {
+            Image(systemName: "hand.thumbsdown.fill")
+                .font(.system(size: 11)).foregroundStyle(Color(nsColor: .systemBrown))
+                .help("Less like this")
+                .accessibilityLabel("Less like this")
         }
     }
 }
@@ -472,12 +596,13 @@ struct FeedbackMark: View {
 struct SongFeedbackButtons: View {
     let title: String
     let feedback: RecommendationFeedback
+    var likeConfirmed = false
     let like: () -> Void
     let dislike: () -> Void
     var body: some View {
         HStack(spacing: 4) {
-            feedbackButton(selected: feedback.liked, symbol: "heart", color: .pink,
-                label: feedback.liked ? "Remove like for " + title : "Like " + title, action: like)
+            feedbackButton(selected: likeConfirmed, symbol: "heart", color: .pink,
+                label: likeConfirmed ? "Like sent for " + title : "Like " + title, action: like)
             feedbackButton(selected: feedback.less, symbol: "hand.thumbsdown", color: Color(nsColor: .systemBrown),
                 label: feedback.less ? "Remove dislike for " + title : "Less like this: " + title, action: dislike)
         }.fixedSize()

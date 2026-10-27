@@ -12,8 +12,8 @@ synthetic data, never a personal listening archive.
   one continuous list, and Play, Like, and More actions.
 - History: expanding native table, search, export, and an inline disclosure for
   source details and manual History.dat checks. Warnings remain visible.
-- Dropdown: playback heading, native commands, five two-line recommendations,
-  album labels, Browse all recommendations, recording, and Quit.
+- Dropdown: playback heading, native commands, a scrollable full recommendation
+  batch in a five-row viewport, separate title and artist lines, recording, and Quit.
 - Native menu section headers on macOS 14+, with a disabled-label fallback
   on macOS 13. Recommendation identity remains stable while the menu is open.
 
@@ -63,11 +63,27 @@ albums, history, recording state, and errors.
 
 ## Song preference states
 
-Direct Like / Less like this buttons now show filled icons and tinted selected
-backgrounds. History marks and dropdown checkmarks reflect the same saved
-preference. A song-specific footer receipt offers Undo after a rating, even if
-the recommendation is replaced. Pressing an already selected rating clears it.
-The model tests cover immediate state updates, opposing ratings, clear, Undo,
-archive reload, and distinct identities sharing a title.
+Like now acts as a momentary feedback action. Its heart and song-specific Undo
+receipt appear for three seconds, then clear while the stored recommendation
+preference remains. Saved likes do not leave hearts in history, recommendation
+subtitles, or current-song menu commands. Less like this retains its selected
+state. Repeated Like clicks send feedback rather than toggling the preference.
+The preview includes `like-before`, `like-confirmation`, and `like-after` frames
+and checks that expiry preserves the saved Like.
 
-![Song preference confirmation with Undo](images/feedback-confirmation.png)
+## Dropdown width and material regression
+
+The dropdown remains 340 pt wide with long English/CJK status messages, errors,
+and recommendation titles. Display text reserves native state, icon and shortcut
+columns; full identities and tooltips remain available. The header is transparent
+and inherits the native menu material. `menuLayoutTests` exercises the real menu
+builder and native width calculation. The check failed at 416 pt before the fix
+and passes at 340 pt after it. Native dropdowns were inspected in both Aqua and
+Dark Aqua after rebuilding, with no opaque header rectangle.
+
+### Solid menu background
+
+The menu heading now configures native menu material to use the opaque
+window-background material and within-window blending when attached. Selection
+materials remain native. This follow-up is checked by build and automated
+material/width assertions only; no visual inspection was performed, as requested.
