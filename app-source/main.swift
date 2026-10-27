@@ -220,7 +220,12 @@ func displayDate(_ string: String?) -> String {
     @Published var playbackTrackID:String?
     @Published var playbackMessage=""
     @Published var playbackError=""
-    @Published var menuSample:Sample?
+    @Published var songFeedback:[String:RecommendationFeedback]=[:]
+    @Published var currentSongFeedback=RecommendationFeedback()
+    @Published var feedbackConfirmation:FeedbackConfirmation?
+    @Published var menuSample:Sample? {
+        didSet { currentSongFeedback=menuSample.map { feedback(for:$0) } ?? RecommendationFeedback() }
+    }
     @Published var albumOptions:[AlbumCollection]=[]
     @Published var albumModes:[String:AlbumListeningMode]=[:]
     @Published var libraryDetailsBusy=false
@@ -347,6 +352,7 @@ func displayDate(_ string: String?) -> String {
                 let artist=albumArtists[row["track_id"] ?? ""] ?? ""
                 return HistoryRow(id:row["id"]!,trackID:row["track_id"]!,date:row["first_observed_at"].map{displayDate($0)} ?? "Date unknown",title:row["title"] ?? "",artist:artist.isEmpty ? "Unknown album artist" : artist,album:row["album"] ?? "",amount:seconds.map{String(format:"%.0f sec",$0)} ?? "Unknown",detail:detail)
             }
+            try refreshFeedback()
             historyStatus=try archive.value("history_detail")
             historyChecked=displayDate(try archive.value("history_last_check"))
             if Date()>=nextRecommendations {
@@ -496,13 +502,31 @@ func displayDate(_ string: String?) -> String {
             }
         }
     }
+    func feedback(for current:Sample) -> RecommendationFeedback {
+        guard let persistentID=current.musicPersistentID,
+              let id=(try? archive.rows("SELECT track_id FROM track_aliases WHERE kind='persistent' AND value=?",[persistentID]))?.first?["track_id"] else { return RecommendationFeedback() }
+        return songFeedback[id] ?? RecommendationFeedback()
+    }
+    func refreshFeedback() throws {
+        songFeedback=try archive.recommendationFeedback(now:Date())
+        currentSongFeedback=menuSample.map { feedback(for:$0) } ?? RecommendationFeedback()
+    }
     func rate(_ id:String,_ kind:String) {
-        do { try archive.feedback(id,kind);refreshSuggestions() }
-        catch { self.error=error.localizedDescription }
+        do {
+            let title=suggestions.first{$0.id==id}?.title ?? history.first{$0.trackID==id}?.title ?? albumOptions.first{$0.id==id}?.title ?? (try? archive.rows("SELECT title FROM music_tracks WHERE id=?",[id]))?.first?["title"] ?? "Selection"
+            try archive.feedback(id,kind)
+            try refreshFeedback()
+            feedbackConfirmation=FeedbackConfirmation(title:title,kind:kind)
+            refreshSuggestions();onChange?()
+        } catch { self.error=error.localizedDescription }
     }
     func undoFeedback() {
-        do { try archive.undoRecommendationFeedback();refreshSuggestions() }
-        catch { self.error=error.localizedDescription }
+        do {
+            try archive.undoRecommendationFeedback()
+            try refreshFeedback()
+            feedbackConfirmation=nil
+            refreshSuggestions();onChange?()
+        } catch { self.error=error.localizedDescription }
     }
     func refreshMenuSong(notification:Bool=false) {
         guard collectionEnabled else { return }
@@ -537,6 +561,8 @@ func displayDate(_ string: String?) -> String {
     func rateCurrent(_ current:Sample,_ kind:String) {
         do {
             try archive.feedbackForCurrentSong(current,kind)
+            try refreshFeedback()
+            feedbackConfirmation=FeedbackConfirmation(title:current.title,kind:kind)
             playbackError="";refreshSuggestions()
         } catch { playbackError=error.localizedDescription }
         onChange?()
@@ -730,266 +756,6 @@ func displayDate(_ string: String?) -> String {
     }
 }
 
-struct AppContentView:View {
-    @ObservedObject var model:Model
-    var body:some View {
-        if model.showSetup { SetupView(model:model) }
-        else { HistoryView(model:model) }
-    }
-}
-
-struct SetupView:View {
-    @ObservedObject var model:Model
-    var body:some View {
-        VStack(alignment:.leading,spacing:20) {
-            HStack(alignment:.top,spacing:16) {
-                Image(systemName:"music.note.list").font(.system(size:28,weight:.medium)).foregroundStyle(Color.accentColor).frame(width:36)
-                VStack(alignment:.leading,spacing:6) {
-                    Text("Set up AM Track").font(.system(size:25,weight:.semibold))
-                    Text("Build a listening history from the music you play on this Mac.")
-                        .font(.system(size:13)).foregroundStyle(.secondary)
-                }
-            }
-            Divider()
-            VStack(alignment:.leading,spacing:18) {
-                setupRow("music.note",title:"Connect your Music library",detail:"Read song and album details, play counts, and last-played dates to help you rediscover your music.")
-                setupRow("waveform",title:"Record from now on",detail:"While recording is on and this Mac is awake, check Music every 5 seconds. Existing play counts never become invented past listening events.")
-                setupRow("internaldrive",title:"Keep your data on this Mac",detail:"History and preferences stay in your local data folder. AM Track does not upload them or send analytics. Music may contact Apple for playback.")
-            }
-            Text("Open Music, then enable recording below. macOS will ask for permission to control Music. You can stop recording from the menu bar; your choice is remembered when AM Track reopens.")
-                .font(.system(size:13)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-            if !model.error.isEmpty {
-                Label(model.error,systemImage:"exclamationmark.triangle").font(.system(size:12)).foregroundStyle(.orange)
-            }
-            Spacer(minLength:0)
-            HStack {
-                Button("Not now") { model.showSetup=false }
-                Spacer()
-                Button("Enable recording") { model.finishSetup() }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }.padding(32).frame(maxWidth:680,maxHeight:.infinity,alignment:.topLeading)
-            .frame(maxWidth:.infinity,maxHeight:.infinity)
-            .background(Color(nsColor:.windowBackgroundColor))
-    }
-    func setupRow(_ symbol:String,title:String,detail:String) -> some View {
-        HStack(alignment:.top,spacing:12) {
-            Image(systemName:symbol).font(.system(size:17)).foregroundStyle(.secondary).frame(width:24)
-            VStack(alignment:.leading,spacing:4) {
-                Text(title).font(.system(size:13,weight:.semibold))
-                Text(detail).font(.system(size:13)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-            }
-        }
-    }
-}
-
-struct HistoryView: View {
-    @ObservedObject var model: Model
-    var selected:Int { model.selectedTab }
-    @State private var search=""
-    var rows: [HistoryRow] {
-        let all = model.history
-        return search.isEmpty ? all : all.filter { [$0.title,$0.artist,$0.album].joined(separator:" ").localizedCaseInsensitiveContains(search) }
-    }
-    var body: some View {
-        VStack(alignment:.leading,spacing:16) {
-            HStack(alignment:.center,spacing:16) {
-                Image(systemName:model.recording ? "waveform" : "music.note.list").font(.system(size:25,weight:.medium)).foregroundStyle(model.recording ? Color.accentColor : .secondary).frame(width:36)
-                VStack(alignment:.leading,spacing:4) {
-                    Text(model.status).font(.system(size:21,weight:.semibold))
-                    Text(model.recording ? ((model.sample?.title.isEmpty == false ? model.sample!.title + " · " + model.sample!.albumArtistLabel : "Music playback will appear here")) : "Your saved history is here. Start recording whenever you’re ready.")
-                        .font(.system(size:13)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
-                }
-                Spacer(minLength:12)
-                Button(model.recording ? "Stop recording" : "Start recording") { model.recording ? model.stop() : model.start() }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .accessibilityHint("Controls this history recorder. Does not change Music playback.")
-            }
-            if !model.collectionEnabled {
-                HStack {
-                    Text("Enable Music access to build your own listening history and recommendations.")
-                    Spacer()
-                    Button("Set up Music access") { model.showSetup=true }
-                }.font(.system(size:13))
-            }
-            if !model.error.isEmpty || !model.libraryDetailsError.isEmpty {
-                VStack(alignment:.leading,spacing:6) {
-                    Label(model.error.isEmpty ? model.libraryDetailsError : model.error,systemImage:"exclamationmark.triangle")
-                        .foregroundStyle(.orange).textSelection(.enabled)
-                    Button("Open Automation settings") { model.openAutomationSettings() }.buttonStyle(.link)
-                }.font(.system(size:12))
-            }
-            HStack(spacing:16) {
-                Picker("History",selection:$model.selectedTab) {
-                    Text("History").tag(0);Text("For you").tag(4)
-                }.pickerStyle(.segmented).frame(maxWidth:560).labelsHidden()
-                Spacer(minLength:0)
-                TextField("Search songs or artists",text:$search).textFieldStyle(.roundedBorder).frame(width:210).accessibilityLabel("Search history")
-            }
-            if selected == 0 {
-            VStack(alignment:.leading,spacing:6) {
-                HStack {
-                    Label(model.historyIsLive ? "Live Music history selected" : "Saved history copy · optional cross-check",systemImage:model.historyIsLive ? "checkmark.circle" : "doc")
-                    Spacer()
-                    Button(model.historyBusy ? "Checking…" : "Check History.dat") { model.checkHistory() }.disabled(model.historyBusy)
-                    Button("Choose History.dat…") { model.chooseHistory() }
-                }
-                Text(model.historyStatus.isEmpty ? "History check pending" : model.historyStatus).textSelection(.enabled)
-                if !model.historyProblem.isEmpty { Label(model.historyProblem,systemImage:"exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
-                Text(model.databaseStatus + (model.historyChecked.isEmpty ? "" : " · History checked \(model.historyChecked)") + " · History.dat checks are manual")
-                    .foregroundStyle(.secondary)
-            }.font(.system(size:12))
-            }
-            if selected == 4 {
-                SuggestionsView(model:model,search:search)
-            } else {
-            Text("One merged history. Music’s checked sequence takes priority in matched stretches and fills recording gaps. Dates shown are recording observations; undated entries keep Music’s order.")
-                .font(.system(size:12)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-            Table(rows) {
-                TableColumn("Observed",value:\.date).width(min:120,ideal:150,max:190)
-                TableColumn("Song") { row in
-                    Text(row.title).contextMenu {
-                        Button("Like") { model.rate(row.trackID,"like") }
-                        Button("Less like this") { model.rate(row.trackID,"less") }
-                        Button("Not now") { model.rate(row.trackID,"later") }
-                    }
-                }.width(min:150,ideal:270)
-                TableColumn("Album artist",value:\.artist).width(min:100,ideal:160)
-                TableColumn("Listened") { row in Text(row.amount).monospacedDigit() }.width(min:65,ideal:80,max:90)
-                TableColumn("Source / note") { row in Text(row.detail).foregroundStyle(.secondary) }.width(min:100,ideal:180)
-            }
-            .overlay {
-                if rows.isEmpty {
-                    VStack(spacing:8) {
-                        Image(systemName:search.isEmpty ? "music.note" : "magnifyingglass").font(.system(size:26)).foregroundStyle(.secondary)
-                        Text(search.isEmpty ? "No history here yet" : "No matching songs").font(.headline)
-                        Text(search.isEmpty ? "New sessions appear while recording is on." : "Try another song or artist.").font(.subheadline).foregroundStyle(.secondary)
-                    }.allowsHitTesting(false)
-                }
-            }
-            }
-            HStack {
-                Text("\((selected == 4 ? model.suggestions.count : rows.count).formatted()) \(selected == 4 ? "recommendations" : "entries")").monospacedDigit()
-                if model.recording && !model.lastCheck.isEmpty { Text("· Checked \(model.lastCheck)") }
-                Spacer()
-                Button("Export history") {
-                    do { try model.archive.exportAll();NSWorkspace.shared.activateFileViewerSelecting([model.archive.folder.appendingPathComponent("history.csv")]) }
-                    catch { model.error=error.localizedDescription }
-                }.buttonStyle(.link)
-                Button("Open data folder") { NSWorkspace.shared.open(model.archive.folder) }.buttonStyle(.link)
-            }.font(.system(size:12)).foregroundStyle(.secondary)
-        }
-        .padding(24).frame(minWidth:840,minHeight:440).background(Color(nsColor:.windowBackgroundColor))
-    }
-}
-
-struct SuggestionsView:View {
-    @ObservedObject var model:Model
-    let search:String
-    @State private var showAlbumPreferences=false
-    var body:some View {
-        VStack(alignment:.leading,spacing:12) {
-            HStack {
-                Text("Old favorites, whole albums, and a little discovery.").font(.subheadline).foregroundStyle(.secondary)
-                Spacer()
-                Button("Next for you") { model.nextForYou() }.disabled(model.playbackTrackID != nil)
-                    .help("Keep one recommended song queued and prepare the following song ahead of time")
-                Button("Album preferences…") { showAlbumPreferences=true }
-                Button("Undo last feedback") { model.undoFeedback() }
-                Button("Refresh") { model.refreshSuggestions(intent:.advance);model.refreshLibraryDetails(force:true);model.refreshMenuSong() }
-            }
-            if model.automaticQueue.enabled {
-                HStack {
-                    Text(model.automaticQueue.waitingForAlbum ? "Auto queue · waiting until the album finishes" : "Auto queue · one song ahead")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Stop auto queue") { model.stopAutomaticQueue() }.controlSize(.small)
-                }
-            }
-            if model.libraryDetailsBusy { Text("Updating album artists and track order from Music…").font(.caption).foregroundStyle(.secondary) }
-            if !model.libraryDetailsError.isEmpty { Text(model.libraryDetailsError).font(.caption).foregroundStyle(.orange) }
-            if let current=model.menuSample,current.musicPersistentID != nil {
-                HStack {
-                    VStack(alignment:.leading,spacing:3) {
-                        Text("Now in Music · \(current.title)").font(.subheadline)
-                        Text(current.albumArtistLabel+" · "+current.album).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Like") { model.rateCurrent(current,"like") }
-                    Button("Less like this") { model.rateCurrent(current,"less") }
-                }.padding(.vertical,8)
-                Divider()
-            }
-            if !model.playbackError.isEmpty {
-                Label(model.playbackError,systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-            } else if model.playbackTrackID != nil {
-                Text("Updating Music…").font(.caption).foregroundStyle(.secondary)
-            } else if !model.playbackMessage.isEmpty {
-                Text(model.playbackMessage).font(.caption).foregroundStyle(.secondary)
-            }
-            ScrollView {
-                LazyVStack(alignment:.leading,spacing:0) {
-                    ForEach(model.suggestions.filter { search.isEmpty || [$0.title,$0.artist,$0.album].joined(separator:" ").localizedCaseInsensitiveContains(search) }) { song in
-                        HStack(spacing:16) {
-                            VStack(alignment:.leading,spacing:4) {
-                                Text(song.title).font(.headline)
-                                Text(song.kind == .album ? song.artist+" · Album · \(song.trackIDs.count) saved tracks" : song.artist+" · "+song.album).font(.subheadline).foregroundStyle(.secondary)
-                                Text(song.reason).font(.caption).foregroundStyle(.secondary)
-                                if let issue=song.playbackIssue { Text(issue).font(.caption).foregroundStyle(.orange) }
-                            }.textSelection(.enabled)
-                            Spacer()
-                            Button { model.play(song) } label: {
-                                Label(model.playbackTrackID == song.id ? "Starting…" : song.kind == .album ? "Play album" : "Play",systemImage:"play.fill")
-                            }
-                            .disabled(model.playbackTrackID != nil || song.playbackIssue != nil)
-                            .accessibilityLabel("Play \(song.title) by \(song.artist) in Music")
-                            .help(song.kind == .album ? "Play your saved songs from this album, in album order" : "Play this song from your Music library")
-                            Button("Like") { model.rate(song.id,"like") }
-                            Button("Not now") { model.rate(song.id,"later") }
-                            Button("Less like this") { model.rate(song.id,"less") }
-                            Button("Find in Music") {
-                                var url=URLComponents(string:"https://music.apple.com/search")!
-                                url.queryItems=[URLQueryItem(name:"term",value:song.title+" "+song.artist)]
-                                if let link=url.url { NSWorkspace.shared.open(link) }
-                            }
-                        }.padding(.vertical,14)
-                        Divider()
-                    }
-                }
-                if model.suggestions.isEmpty { Text("Recommendations appear after importing history or recording a few listens.").foregroundStyle(.secondary).padding() }
-            }
-        }
-        .sheet(isPresented:$showAlbumPreferences) { AlbumPreferencesView(model:model) }
-    }
-}
-
-struct AlbumPreferencesView:View {
-    @ObservedObject var model:Model
-    @Environment(\.dismiss) private var dismiss
-    @State private var search=""
-    var body:some View {
-        VStack(alignment:.leading,spacing:16) {
-            Text("Album listening preferences").font(.title2)
-            Text("Choose how you like to listen. Likes for individual songs remain separate.").foregroundStyle(.secondary)
-            TextField("Search albums or album artists",text:$search).textFieldStyle(.roundedBorder)
-            List(model.albumOptions.filter{search.isEmpty || ($0.title+" "+$0.artist).localizedCaseInsensitiveContains(search)}) { album in
-                HStack {
-                    VStack(alignment:.leading,spacing:3) {
-                        Text(album.title)
-                        Text(album.artist).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Picker("Listening style",selection:Binding(get:{model.albumModes[album.id] ?? .automatic},set:{model.setAlbumMode(album.id,$0)})) {
-                        ForEach(AlbumListeningMode.allCases) { mode in Text(mode.label).tag(mode) }
-                    }.labelsHidden().frame(width:190)
-                }.padding(.vertical,4)
-            }
-            HStack { Button("Refresh library details") { model.refreshLibraryDetails(force:true) }.disabled(model.libraryDetailsBusy || model.recording);Spacer();Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(24).frame(width:720,height:500)
-    }
-}
-
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var model: Model!
     var item: NSStatusItem!
@@ -1066,35 +832,64 @@ struct AlbumPreferencesView:View {
         // Keep recommendation rows stable beneath the pointer until the menu closes.
         guard !statusMenuIsOpen else { return }
         let menu=item.menu ?? NSMenu();menu.delegate=self;menu.autoenablesItems=false;menu.removeAllItems()
-        @discardableResult func add(_ title:String,_ action:Selector?=nil,_ key:String="") -> NSMenuItem { let entry=menu.addItem(withTitle:title,action:action,keyEquivalent:key);entry.target=self;entry.isEnabled=action != nil;return entry }
-        add("AM Track · \(model.status)")
-        if let current=model.menuSample,!current.title.isEmpty { add(String(current.title.prefix(64)));add(String(current.albumArtistLabel.prefix(64))) }
-        if !model.error.isEmpty { add(String(model.error.prefix(100))) }
-        if !model.playbackError.isEmpty { add(String(model.playbackError.prefix(140))) }
-        else if !model.playbackMessage.isEmpty { add(String(model.playbackMessage.prefix(140))) }
-        menu.addItem(.separator());add(model.recording ? "Stop recording" : "Start recording",#selector(toggle))
-        add("Show app window",#selector(showHistory),"0")
-        menu.addItem(.separator())
-        for (title,action) in [("Like",#selector(likeCurrent(_:))),("Less like this",#selector(lessLikeCurrent(_:)))] {
-            let entry=add(title,action);entry.representedObject=model.menuSample
-            entry.isEnabled=model.menuSample?.musicPersistentID != nil
+        menu.minimumWidth=340
+        @discardableResult func add(_ title:String,_ action:Selector?=nil,_ key:String="",symbol:String?=nil) -> NSMenuItem {
+            let entry=menu.addItem(withTitle:title,action:action,keyEquivalent:key)
+            entry.target=self;entry.isEnabled=action != nil
+            if let symbol {
+                entry.image=NSImage(systemSymbolName:symbol,accessibilityDescription:nil)
+                entry.image?.isTemplate=true
+            }
+            return entry
         }
-        let nextEntry=add(model.playbackTrackID == nil ? "Next for you" : "Updating Music…",#selector(nextForYou))
-        nextEntry.isEnabled=model.playbackTrackID == nil
-        nextEntry.toolTip="Keep one recommended song queued, with the following song prepared ahead of time."
-        if model.automaticQueue.enabled { add("Stop auto queue",#selector(stopAutomaticQueue)) }
+        let heading=NSMenuItem()
+        let headingView=NSHostingView(rootView:MenuHeading(sample:model.menuSample,recording:model.recording))
+        headingView.frame=NSRect(origin:.zero,size:headingView.fittingSize)
+        heading.view=headingView;menu.addItem(heading)
+        if !model.error.isEmpty {
+            let entry=add(menuFittedText(model.error,font:.menuFont(ofSize:12),width:300))
+            entry.toolTip=model.error
+        }
+        if !model.playbackError.isEmpty || !model.playbackMessage.isEmpty {
+            let message=model.playbackError.isEmpty ? model.playbackMessage : model.playbackError
+            let entry=add(menuFittedText(message,font:.menuFont(ofSize:12),width:300))
+            entry.toolTip=message
+        }
         menu.addItem(.separator())
-        add("For you · Click to play")
-        if model.suggestions.isEmpty { add("No recommendations yet") }
-        for song in model.suggestions {
-            let label=song.title+" · "+song.artist+(song.kind == .album ? " · Album (\(song.trackIDs.count) saved tracks)" : "")
-            let entry=add(label,#selector(playRecommendation(_:)))
+        let nextEntry=add(model.playbackTrackID == nil ? "Next for you" : "Updating Music…",#selector(nextForYou),symbol:"text.line.first.and.arrowtriangle.forward")
+        nextEntry.isEnabled=model.playbackTrackID == nil
+        nextEntry.toolTip="Queue one recommended song without interrupting playback, then keep the queue going."
+        if model.automaticQueue.enabled { add("Stop auto queue",#selector(stopAutomaticQueue),symbol:"stop.circle") }
+        if let current=model.menuSample,current.musicPersistentID != nil {
+            let state=model.feedback(for:current)
+            let like=add(state.liked ? "Remove like" : "Like current song",#selector(likeCurrent(_:)),symbol:state.liked ? "heart.fill" : "heart");like.representedObject=current
+            like.state=state.liked ? .on : .off
+            let less=add(state.less ? "Remove dislike" : "Less like this",#selector(lessLikeCurrent(_:)),symbol:state.less ? "hand.thumbsdown.fill" : "hand.thumbsdown");less.representedObject=current
+            less.state=state.less ? .on : .off
+        }
+        menu.addItem(.separator())
+        if #available(macOS 14.0, *) {
+            menu.addItem(NSMenuItem.sectionHeader(title:"For you"))
+        } else {
+            add("For you")
+        }
+        if model.suggestions.isEmpty { add(model.libraryDetailsBusy ? "Updating your library…" : "No recommendations yet") }
+        // Keep the dropdown glanceable; the window holds the complete batch.
+        for song in model.suggestions.prefix(5) {
+            let entry=add(song.title+" · "+song.artist,#selector(playRecommendation(_:)))
+            entry.attributedTitle=menuRecommendationTitle(song,feedback:model.songFeedback[song.id])
             entry.representedObject=song
             entry.image=NSImage(systemSymbolName:song.kind == .album ? "square.stack" : "music.note",accessibilityDescription:song.kind == .album ? "Album" : "Song")
             entry.image?.isTemplate=true
-            entry.toolTip=song.playbackIssue ?? (song.kind == .album ? "Play your saved songs in album order. " : "Play this library song. ")+song.reason
+            entry.toolTip=song.title+" · "+song.artist+"\n"+(song.playbackIssue ?? (song.kind == .album ? "Play saved songs in album order. " : "Play this library song. ")+song.reason)
             entry.isEnabled=model.playbackTrackID == nil && song.playbackIssue == nil
         }
+        add("Browse all recommendations…",#selector(showSuggestions),symbol:"arrow.up.right.square")
+        menu.addItem(.separator())
+        add("Show app window",#selector(showHistory),"0",symbol:"macwindow")
+        add(model.recording ? "Stop recording" : "Start recording",#selector(toggle),symbol:model.recording ? "pause.circle" : "record.circle")
+        menu.addItem(.separator())
+        add("Quit AM Track",#selector(quit),"q")
         item.menu=menu
     }
     func menuWillOpen(_ menu:NSMenu) {
@@ -1109,8 +904,8 @@ struct AlbumPreferencesView:View {
     @objc func playRecommendation(_ sender:NSMenuItem) {
         if let song=sender.representedObject as? Recommendation { model.play(song) }
     }
-    @objc func likeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,"like") } }
-    @objc func lessLikeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,"less") } }
+    @objc func likeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,model.feedback(for:current).liked ? "reset" : "like") } }
+    @objc func lessLikeCurrent(_ sender:NSMenuItem) { if let current=sender.representedObject as? Sample { model.rateCurrent(current,model.feedback(for:current).less ? "reset" : "less") } }
     @objc func nextForYou() { model.nextForYou() }
     @objc func stopAutomaticQueue() { model.stopAutomaticQueue() }
     @objc func showHistory() { window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true) }
@@ -1164,7 +959,13 @@ func selfTest() throws {
 
 @main struct AMTrackApplication {
     @MainActor static func main() {
-        if CommandLine.arguments.contains("--self-test") {
+        if let index=CommandLine.arguments.firstIndex(of:"--design-preview"),CommandLine.arguments.count > index+1 {
+            let app=NSApplication.shared
+            app.setActivationPolicy(.accessory)
+            let preview=DesignPreview(output:URL(fileURLWithPath:CommandLine.arguments[index+1],isDirectory:true),keepOpen:CommandLine.arguments.contains("--keep-open"))
+            app.delegate=preview;app.run()
+            withExtendedLifetime(preview) {}
+        } else if CommandLine.arguments.contains("--self-test") {
             do { try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")

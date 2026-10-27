@@ -40,15 +40,29 @@ private func check(_ condition:Bool,_ message:String) throws {
     let pid=try model.archive.playbackIDs(for:outside.id).first!
     let current=Sample(["running":true,"state":"paused","title":outside.title,"artist":outside.artist,
         "album":outside.album,"persistent_id":pid])
+    model.menuSample=current
     model.rateCurrent(current,"like")
+    try check(model.currentSongFeedback.liked && !model.currentSongFeedback.less && model.songFeedback[outside.id]?.liked == true,"saved current-song like is immediately visible on the canonical recommendation identity")
+    try check(model.feedbackConfirmation?.kind == "like" && model.feedbackConfirmation?.title == current.title,"feedback confirmation identifies the rated song")
     let liked=try model.archive.recommendations(limit:100)
     try check(liked.first{$0.id==outside.id}!.score>outside.score,"liking a song outside For you changes its score with recording off")
     model.rateCurrent(current,"less")
+    try check(model.currentSongFeedback.less && !model.currentSongFeedback.liked,"dislike replaces the filled like state immediately")
     let less=try model.archive.recommendations(limit:100)
     try check(!less.contains{$0.id==outside.id},"less-like outside For you suppresses that song")
     try check(less.contains { song in liked.first{$0.id==song.id}.map{song.score<$0.score} ?? false },"less-like outside For you also lowers scores for similar music")
     model.undoFeedback()
     try check(try model.archive.recommendationFeedback(now:Date())[outside.id]?.liked==true,"undo restores the external song's like")
+    try check(model.currentSongFeedback.liked && model.feedbackConfirmation == nil,"Undo restores the visible like and clears the confirmation")
+    model.rateCurrent(current,"reset")
+    try check(!model.currentSongFeedback.liked && !model.currentSongFeedback.less,"a selected rating can be cleared")
+    model.undoFeedback()
+    model.menuSample=Sample(["running":true,"state":"paused","title":current.title,"artist":current.artist,"persistent_id":"FFFFFFFFFFFFFFFF"])
+    try check(!model.currentSongFeedback.liked && !model.currentSongFeedback.less,"same-title songs never inherit another identity's visible preference")
+    model.menuSample=current
+    try check(model.currentSongFeedback.liked,"returning to a rated song restores its saved visual state")
+    model.songFeedback=[:];try model.refreshFeedback()
+    try check(model.currentSongFeedback.liked && model.songFeedback[outside.id]?.liked == true,"visible feedback rehydrates from the archive")
     let selected=model.suggestions.first{$0.id != outside.id}!,ids=try model.archive.playbackIDs(for:selected.id)
     let before=model.suggestions.map{$0.id}
     let ratingsBefore=try model.archive.rows("SELECT * FROM recommendation_feedback").count

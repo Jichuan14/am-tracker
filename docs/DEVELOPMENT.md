@@ -31,7 +31,8 @@ This builds and tests the optimized Release app, reconstructs a clean bundle fro
 
 | Path | Contents |
 | --- | --- |
-| `app-source/main.swift` | App interface, menu bar, recording, and startup |
+| `app-source/main.swift` | Menu commands, recording model, and startup |
+| `app-source/Interface.swift`, `DesignPreview.swift` | Native window views, menu heading, and isolated design renders |
 | `app-source/HistoryStore.swift`, `UnifiedHistory.swift` | History storage, imports, and reconciliation |
 | `app-source/Recommendations.swift`, `RecommendationRotation.swift`, `AlbumTaste.swift` | Recommendation ranking, persistent batch rotation, and album preferences |
 | `app-source/MusicPlayback.swift`, `MusicQueue.swift`, `AutomaticPlayback.swift`, `BackgroundQueue.m` | Playback and queue integration |
@@ -46,3 +47,28 @@ This builds and tests the optimized Release app, reconstructs a clean bundle fro
 Runtime files include `history.sqlite3`, `history.csv`, `status.json`, `database-health.json`, backups, and any selected `History.dat`. They contain private listening information and should stay local. Use **Open data folder** in the app to locate them.
 
 This repository contains source and test fixtures, which may use real song names or public catalog IDs. Its `.gitignore` allows reviewed project files by name; databases, exports, reports, backups, app bundles, build caches, and unlisted files are excluded. Add an explicit allowlist entry when introducing a source file or documentation asset. Avoid force-adding runtime files.
+
+## Interface and design previews
+
+The window views and shared menu heading are in `app-source/Interface.swift`.
+The native dropdown's command wiring is in `AppDelegate.updateMenu()` in
+`main.swift`. See [DESIGN.md](../DESIGN.md) for the visual rules.
+
+After building, generate native light/dark renders at normal size, minimum
+width, minimum height, and both minimum dimensions:
+
+```sh
+"app-source/.build/AM Track.app/Contents/MacOS/AMTrack" \
+  --design-preview "$PWD/app-source/.build/design-previews"
+```
+
+Add `--keep-open` to inspect the fixture window. In this preview, Command-D
+opens the same native dropdown used by the status item. The preview creates
+an isolated temporary archive with synthetic display data, starts no recorder,
+and performs no automatic Music queries. Close it with Command-Q. The
+production app uses the real model; fixture content is only used by the
+explicit preview command. Generated renders stay in the ignored build folder.
+Reviewed example renders and verification notes are in
+[Design verification](DESIGN-VERIFICATION.md).
+Use `--dark` with `--keep-open` to inspect the dropdown in Dark Aqua without
+changing system appearance.
