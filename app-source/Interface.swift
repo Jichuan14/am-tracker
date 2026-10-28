@@ -120,6 +120,8 @@ struct HistoryView: View {
                         Text("History").tag(0)
                         Text("For you").tag(4)
                     }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                    Button { model.openMonthlyRecap?() } label: { Label("Monthly recap", systemImage: "chart.bar.xaxis") }
+                        .help("Open your live monthly listening recap in its own window")
                     Spacer()
                     HStack(spacing: 7) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)

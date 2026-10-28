@@ -31,6 +31,8 @@ done
 for resource in sample library playback play catalog; do
   /bin/cp "$source_root/Resources/$resource.js" "$app_root/Contents/Resources/$resource.js"
 done
+/bin/mkdir -p "$app_root/Contents/Resources/Recap"
+/bin/cp "$source_root/.build/Release/AM Track.app/Contents/Resources/Recap/"* "$app_root/Contents/Resources/Recap/"
 /usr/bin/codesign --force --sign - --identifier org.amtrack.app.queue "$app_root/Contents/MacOS/AMQueue"
 /usr/bin/codesign --force --sign - --identifier org.amtrack.app "$app_root"
 /usr/bin/codesign --verify --deep --strict "$app_root"

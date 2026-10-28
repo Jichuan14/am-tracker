@@ -216,6 +216,8 @@ func displayDate(_ string: String?) -> String {
     @Published var sample: Sample?
     @Published var error = ""
     @Published var history:[HistoryRow]=[]
+    @Published var monthly=MonthlySnapshot()
+    var openMonthlyRecap: (() -> Void)?
     @Published var suggestions:[Recommendation]=[]
     @Published var playbackTrackID:String?
     @Published var playbackMessage=""
@@ -362,6 +364,8 @@ func displayDate(_ string: String?) -> String {
                 let artist=albumArtists[row["track_id"] ?? ""] ?? ""
                 return HistoryRow(id:row["id"]!,trackID:row["track_id"]!,date:row["first_observed_at"].map{displayDate($0)} ?? "Date unknown",title:row["title"] ?? "",artist:artist.isEmpty ? "Unknown album artist" : artist,album:row["album"] ?? "",amount:seconds.map{String(format:"%.0f sec",$0)} ?? "Unknown",detail:detail)
             }
+            let monthlySnapshot=try archive.monthlySnapshot()
+            if monthly != monthlySnapshot { monthly=monthlySnapshot }
             try refreshFeedback()
             historyStatus=try archive.value("history_detail")
             historyChecked=displayDate(try archive.value("history_last_check"))
@@ -770,6 +774,7 @@ func displayDate(_ string: String?) -> String {
     var model: Model!
     var item: NSStatusItem!
     var window: NSWindow!
+    var monthlyRecap: MonthlyRecapWindow?
     var menuSongTimer:Timer?
     var musicPlaybackObservers:[NSObjectProtocol]=[]
     var statusMenuIsOpen=false
@@ -793,6 +798,7 @@ func displayDate(_ string: String?) -> String {
             model=try Model(folder:folder)
             item=NSStatusBar.system.statusItem(withLength:NSStatusItem.variableLength)
             model.onChange={ [weak self] in self?.updateMenu() }
+            model.openMonthlyRecap={ [weak self] in self?.showMonthlyRecap() }
             window=NSWindow(contentRect:NSRect(x:0,y:0,width:1100,height:680),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
             window.title="AM Track";window.minSize=NSSize(width:888,height:490);window.isReleasedWhenClosed=false
             let content=NSHostingView(rootView:AppContentView(model:model))
@@ -825,6 +831,8 @@ func displayDate(_ string: String?) -> String {
     func createAppMenu() {
         let menu=NSMenu(),root=NSMenuItem(),app=NSMenu()
         menu.addItem(root);root.submenu=app
+        let recapItem=app.addItem(withTitle:"Monthly recap",action:#selector(showMonthlyRecap),keyEquivalent:"m")
+        recapItem.target=self;recapItem.keyEquivalentModifierMask=[.command,.shift]
         app.addItem(withTitle:"Show app window",action:#selector(showHistory),keyEquivalent:"0").target=self
         app.addItem(.separator());app.addItem(withTitle:"Quit AM Track",action:#selector(quit),keyEquivalent:"q").target=self
         let editRoot=NSMenuItem(title:"Edit",action:nil,keyEquivalent:"");let edit=NSMenu(title:"Edit");editRoot.submenu=edit;menu.addItem(editRoot)
@@ -901,6 +909,7 @@ func displayDate(_ string: String?) -> String {
             menu.addItem(recommendations)
         }
         menu.addItem(.separator())
+        add("Monthly recap",#selector(showMonthlyRecap),symbol:"chart.bar.xaxis")
         add("Show app window",#selector(showHistory),"0",symbol:"macwindow")
         add(model.recording ? "Stop recording" : "Start recording",#selector(toggle),symbol:model.recording ? "pause.circle" : "record.circle")
         menu.addItem(.separator())
@@ -924,6 +933,10 @@ func displayDate(_ string: String?) -> String {
     @objc func undoFeedback() { model.undoFeedback() }
     @objc func nextForYou() { model.nextForYou() }
     @objc func stopAutomaticQueue() { model.stopAutomaticQueue() }
+    @objc func showMonthlyRecap() {
+        if monthlyRecap == nil { monthlyRecap = MonthlyRecapWindow(model: model) }
+        monthlyRecap?.show()
+    }
     @objc func showHistory() { window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true) }
     @objc func toggle() { model.recording ? model.stop() : model.start() }
     @objc func showSuggestions() { model.selectedTab=4;showHistory() }
@@ -982,7 +995,7 @@ func selfTest() throws {
             app.delegate=preview;app.run()
             withExtendedLifetime(preview) {}
         } else if CommandLine.arguments.contains("--self-test") {
-            do { try menuLayoutTests();try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
+            do { try menuLayoutTests();try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try monthlyRankingTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")
         } else if CommandLine.arguments.contains("--upgrade-only") {

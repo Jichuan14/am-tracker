@@ -87,3 +87,30 @@ The menu heading now configures native menu material to use the opaque
 window-background material and within-window blending when attached. Selection
 materials remain native. This follow-up is checked by build and automated
 material/width assertions only; no visual inspection was performed, as requested.
+
+## Dedicated monthly recap
+
+The recap opens in its own AppKit window from the tracker, menu bar, or
+Command-Shift-M. Its current layout prioritizes compact totals and graphs:
+a daily line/area chart, shared minute/date axes, a shaded future-date region,
+and proportional ranking bars for songs, artists and albums. Promotional copy,
+the large cover and artist illustration have been removed. Methodology remains
+behind Details; exact daily values are available by pointer or keyboard focus.
+
+Verification completed with the full Debug build and bundled checks, including
+the existing 340-point menu-width regression check. Isolated WebKit checks cover
+bar ranges, the daily axis, keyboard inspection, month and metric selection,
+live updates with preserved scroll/focus/expansions, and inert HTML-like metadata.
+
+Native snapshots were inspected at 1180 × 820, 760 × 820, 1180 × 572 and
+760 × 572 content points, plus a 50,000-minute stress total, long mixed-language
+names, empty data and ranking sections. Graphs measure their viewport to keep
+axis labels readable when resized. Future dates never become invented zero
+observations, while elapsed days with no recorded listening keep a zero value.
+
+The page bundles all assets locally with restrictive CSP and ephemeral WebKit
+storage. Data comes from the canonical monthly model; there are no network,
+remote-artwork or personal-archive calls in preview mode. Use the documented
+`--recap` design preview to reproduce. Generated screenshots stay in the ignored
+build folder. Existing Swift 6 isolation warnings remain in unrelated playback
+code; the configured Swift 5 build passes.
