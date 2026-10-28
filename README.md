@@ -37,9 +37,9 @@ remote scripts, fonts, artwork lookups, or analytics.
 Charts group dated, reconciled history into Gregorian months in your Mac’s time zone.
 Each entry and its observed time belong to the month of its first observation,
 including entries that cross a month boundary. Entries do not imply completed
-plays. Undated imports and library lifetime counts are excluded. Artist charts
-use song artist credits; album tracks combine only when album title and album
-artist are known. Your recap covers recording on this Mac, not all-device Apple
+plays. Undated imports and library lifetime counts are excluded. Artist charts and recap song labels use album artist, falling back to song
+artist when album artist is missing; album tracks combine only when album title
+and album artist are known. Your recap covers recording on this Mac, not all-device Apple
 Music history. The recorder must run while you listen to add new observations.
 
 ### Find something worth playing again

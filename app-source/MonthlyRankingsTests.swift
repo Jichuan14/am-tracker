@@ -36,9 +36,36 @@ func monthlyRankingTests() throws {
     let time = snapshot.report(month: march, category: .songs, metric: .time, calendar: calendar)
     try check(time.rows.first?.id == "b" && time.rows.map(\.rank) == [1, 2, 3], "listening-time ranking uses observed seconds rather than duration or entry count")
     let artists = snapshot.report(month: march, category: .artists, metric: .entries, calendar: calendar)
-    try check(artists.rows.count == 2 && artists.rows.first?.entries == 4, "artist totals combine song credits")
+    try check(artists.rows.count == 2 && artists.rows.first?.entries == 4, "artist totals combine album artist credits")
     let albums = snapshot.report(month: march, category: .albums, metric: .entries, calendar: calendar)
     try check(albums.rows.count == 2 && albums.rows.first?.entries == 4, "albums combine tracks only under the same known album artist")
+    let collaborations = MonthlySnapshot(listens: [
+        listen("solo", "solo", "2026-03-01T12:00:00-08:00", seconds: 90, title: "Memória", artist: "ROSALÍA", album: "LUX", albumArtist: "ROSALÍA"),
+        listen("guests", "guests", "2026-03-02T12:00:00-08:00", seconds: 150, title: "La Rumba Del Perdón", artist: "ROSALÍA, Estrella Morente & Sílvia Pérez Cruz", album: "LUX", albumArtist: "ROSALÍA"),
+        listen("other-guests", "other-guests", "2026-03-03T12:00:00-08:00", seconds: 180, title: "Berghain", artist: "ROSALÍA, Björk & Yves Tumor", album: "LUX", albumArtist: "ROSALÍA"),
+        listen("other-artist", "other-artist", "2026-03-04T12:00:00-08:00", seconds: 240, artist: "Estrella Morente", albumArtist: "Estrella Morente"),
+        listen("prior-guest", "prior-guest", "2026-02-10T12:00:00-08:00", artist: "ROSALÍA & Guest", albumArtist: "ROSALÍA"),
+        listen("prior-other-1", "prior-other-1", "2026-02-11T12:00:00-08:00", artist: "Estrella Morente", albumArtist: "Estrella Morente"),
+        listen("prior-other-2", "prior-other-2", "2026-02-12T12:00:00-08:00", artist: "Estrella Morente", albumArtist: "Estrella Morente")
+    ])
+    let albumArtists = collaborations.report(month: march, category: .artists, metric: .entries, calendar: calendar)
+    try check(albumArtists.rows.count == 2 && albumArtists.artistCount == 2, "solo and guest credits on ROSALÍA albums form one album-artist group")
+    let rosalia = albumArtists.rows.first!
+    try check(rosalia.title == "ROSALÍA" && rosalia.entries == 3 && rosalia.seconds == 420, "album-artist grouping combines entry counts and observed time")
+    try check(rosalia.previousRank == 2 && rosalia.movement == "↑ 1", "previous-month movement uses the same album-artist grouping")
+    let artistTime = collaborations.report(month: march, category: .artists, metric: .time, calendar: calendar)
+    try check(artistTime.rows.first?.title == "ROSALÍA" && artistTime.rows.first?.seconds == 420, "time-ranked artist charts combine collaborations")
+    let collaborationSongs = collaborations.report(month: march, category: .songs, metric: .entries, calendar: calendar)
+    try check(collaborationSongs.rows.first { $0.id == "guests" }?.subtitle == "ROSALÍA · LUX", "recap song labels use the album artist")
+    try check(collaborationSongs.entryCount == 4 && collaborationSongs.songCount == 4 && collaborationSongs.seconds == 660, "artist grouping preserves song identities and listening totals")
+    let artistCSV = monthlyCSV(albumArtists, category: .artists, metric: .entries, calendar: calendar)
+    try check(!artistCSV.contains("Sílvia Pérez Cruz") && artistCSV.contains("ROSALÍA"), "artist CSV exports the grouped album artist")
+    let fallbackArtists = MonthlySnapshot(listens: [
+        listen("fallback", "fallback", "2026-03-01T12:00:00-08:00", artist: "Simon & Garfunkel", albumArtist: "  "),
+        listen("album-only", "album-only", "2026-03-02T12:00:00-08:00", artist: "", albumArtist: "ROSALÍA")
+    ]).report(month: march, category: .artists, metric: .entries, calendar: calendar)
+    try check(Set(fallbackArtists.rows.map(\.title)) == ["ROSALÍA", "Simon & Garfunkel"] && fallbackArtists.artistCount == 2, "missing album artist falls back to intact song credits without splitting names")
+
     let empty = snapshot.report(month: date("2026-01-01T00:00:00-08:00"), category: .songs, metric: .entries, calendar: calendar)
     try check(empty.rows.isEmpty && empty.entryCount == 0 && empty.seconds == 0, "empty months have honest zero totals")
     let february = snapshot.report(month: date("2026-02-01T00:00:00-08:00"), category: .songs, metric: .entries, calendar: calendar)
@@ -107,6 +134,11 @@ func monthlyRankingTests() throws {
     try archive.syncRecordingsAndLibrary()
     let stored = try archive.monthlySnapshot().report(month: march, category: .songs, metric: .entries, calendar: calendar)
     try check(stored.entryCount == 1 && stored.seconds == 120 && stored.undatedCount == 1, "archive query deduplicates catalog aliases and never assigns import timestamps to listens")
+    try archive.saveAlbumMetadata(["album_artist": "ROSALÍA", "album": "Album"], id: track)
+    let albumArtistSnapshot = try archive.monthlySnapshot()
+    try check(albumArtistSnapshot.listens.first { $0.trackID == track }?.artist == "Artist", "album-artist grouping preserves the recorded song credits")
+    let storedArtists = albumArtistSnapshot.report(month: march, category: .artists, metric: .entries, calendar: calendar)
+    try check(storedArtists.rows.first?.title == "ROSALÍA" && storedArtists.rows.first?.entries == 1, "archive album metadata drives the artist ranking")
     try archive.exec("UPDATE listening_history SET status='superseded' WHERE track_id=?", [track])
     try check(try archive.monthlySnapshot().report(month: march, category: .songs, metric: .entries, calendar: calendar).entryCount == 0, "superseded recorder evidence cannot leak into monthly rankings")
     print("PASS: monthly boundaries, DST, year rollover, ties, rank movement, categories, unknown identities, CSV safety, canonical deduplication and undated exclusions.")

@@ -11,6 +11,10 @@ struct MonthlyListen: Equatable {
     let albumArtist: String
     let observedAt: Date?
     let seconds: Double
+    var rankingArtist: String {
+        let albumCredit = albumArtist.trimmingCharacters(in: .whitespacesAndNewlines)
+        return albumCredit.isEmpty ? artist.trimmingCharacters(in: .whitespacesAndNewlines) : albumCredit
+    }
 }
 
 enum MonthlyCategory: String, CaseIterable, Identifiable {
@@ -103,7 +107,7 @@ struct MonthlySnapshot: Equatable {
         }
         return MonthlyReport(month: start, rows: rows, entryCount: current.count,
             songCount: Set(current.map(\.trackID)).count,
-            artistCount: Set(current.map { normalized($0.artist) }.filter { !$0.isEmpty }).count,
+            artistCount: Set(current.map { normalized($0.rankingArtist) }.filter { !$0.isEmpty }).count,
             seconds: current.reduce(0) { $0 + $1.seconds }, undatedCount: listens.filter { $0.observedAt == nil }.count)
     }
     private static func groups(_ listens: [MonthlyListen], category: MonthlyCategory, metric: MonthlyMetric) -> [MonthlyRank] {
@@ -120,10 +124,10 @@ struct MonthlySnapshot: Equatable {
             switch category {
             case .songs:
                 id = listen.trackID; title = listen.title.isEmpty ? "Untitled song" : listen.title
-                subtitle = [listen.artist.isEmpty ? "Unknown artist" : listen.artist, listen.album].filter { !$0.isEmpty }.joined(separator: " · ")
+                subtitle = [listen.rankingArtist.isEmpty ? "Unknown artist" : listen.rankingArtist, listen.album].filter { !$0.isEmpty }.joined(separator: " · ")
             case .artists:
-                id = "artist:" + normalized(listen.artist)
-                title = listen.artist.isEmpty ? "Unknown artist" : listen.artist; subtitle = ""
+                id = "artist:" + normalized(listen.rankingArtist)
+                title = listen.rankingArtist.isEmpty ? "Unknown artist" : listen.rankingArtist; subtitle = ""
             case .albums:
                 // Same-named albums by different artists remain separate. Missing
                 // album identity stays track-specific rather than merging strangers.

@@ -105,3 +105,8 @@ Edit `Resources/Recap/recap.css` as the single CSS strategy, `recap.js` for safe
 stateful rendering, and `index.html` for semantic structure. Native window and
 CSV behavior stay in `MonthlyRecapWindow.swift`. Production supplies real data;
 `--design-preview OUTPUT --recap` uses isolated sample data for verification.
+
+Monthly artist groups, the artist total, rank movement, CSV exports and recap
+song labels use Album Artist when present. Missing Album Artist falls back to
+the intact song artist credit. Never split artist names on commas or ampersands;
+original recording metadata stays unchanged.
