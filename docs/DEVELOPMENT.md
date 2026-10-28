@@ -33,6 +33,7 @@ This builds and tests the optimized Release app, reconstructs a clean bundle fro
 | --- | --- |
 | `app-source/main.swift` | Menu commands, recording model, and startup |
 | `app-source/Interface.swift`, `DesignPreview.swift` | Native window views, menu heading, and isolated design renders |
+| `app-source/MonthlyRankings.swift`, `MonthlyRecapWindow.swift`, `MonthlyRankingsTests.swift` | Monthly aggregation, dedicated local WebKit recap window, and isolated date/ranking/export checks |
 | `app-source/HistoryStore.swift`, `UnifiedHistory.swift` | History storage, imports, and reconciliation |
 | `app-source/Recommendations.swift`, `RecommendationRotation.swift`, `AlbumTaste.swift` | Recommendation ranking, persistent batch rotation, and album preferences |
 | `app-source/MusicPlayback.swift`, `MusicQueue.swift`, `AutomaticPlayback.swift`, `BackgroundQueue.m` | Playback and queue integration |
@@ -72,3 +73,22 @@ Reviewed example renders and verification notes are in
 [Design verification](DESIGN-VERIFICATION.md).
 Use `--dark` with `--keep-open` to inspect the dropdown in Dark Aqua without
 changing system appearance.
+
+For the dedicated visual recap window, run:
+
+```sh
+"app-source/.build/AM Track.app/Contents/MacOS/AMTrack" \
+  --design-preview "$PWD/app-source/.build/recap-previews" --recap --keep-open
+```
+
+This renders normal, minimum-width, minimum-height and minimum-combination
+recap windows, plus songs, albums/activity, live-update and empty states. It
+asserts that live data updates preserve focus and scroll and that untrusted
+music metadata stays inert text. Preview data is synthetic and isolated.
+
+The recap bundles buildless HTML/CSS/JS from `Resources/Recap/` in both Debug
+and release packages. `MonthlyRecapWindow.swift` owns the AppKit window,
+ephemeral WKWebView, native CSV export, and strict local-document bridge. No
+HTTP server or remote assets are involved. The open page checks the published
+monthly model every five seconds; recording continues through the existing
+recorder. Month/metric selections and list expansion remain stable on updates.

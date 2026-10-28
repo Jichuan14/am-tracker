@@ -42,6 +42,23 @@ import SwiftUI
                 let t = tracks[i % tracks.count]
                 return HistoryRow(id: "row-\(i)", trackID: "preview-\(i)", date: i == 0 ? "Oct 24, 3:38 PM" : "Date unknown", title: t.0, artist: t.1, album: t.2, amount: i == 0 ? "173 sec" : "Unknown", detail: i == 0 ? "Recording" : "Music history")
             }
+            let month = MonthlySnapshot.monthStart(Date())
+            var monthlyListens: [MonthlyListen] = []
+            for (i, t) in tracks.enumerated() {
+                for previous in [false, true] {
+                    let start = Calendar.current.date(byAdding: .month, value: previous ? -1 : 0, to: month)!
+                    let count = previous ? [12, 17, 8, 0, 5, 3][i] : [23, 19, 14, 11, 7, 4][i]
+                    let availableDays = previous ? Calendar.current.range(of: .day, in: .month, for: start)!.count : Calendar.current.component(.day, from: Date())
+                    for n in 0..<count {
+                        let day = Calendar.current.date(byAdding: .day, value: (n * 7 + i * 3) % availableDays, to: start)!
+                        monthlyListens.append(MonthlyListen(id: "monthly-\(previous)-\(i)-\(n)", trackID: "preview-\(i)",
+                            title: t.0, artist: t.1, album: t.2, albumArtist: t.1,
+                            observedAt: day.addingTimeInterval(Double(3600 + n * 90 + i * 220)), seconds: Double(137 + i * 23 + n * 3)))
+                    }
+                }
+            }
+            monthlyListens.append(MonthlyListen(id: "monthly-undated", trackID: "preview-undated", title: "Undated import", artist: "", album: "", albumArtist: "", observedAt: nil, seconds: 0))
+            model.monthly = MonthlySnapshot(listens: monthlyListens)
             model.historyStatus = "Imported sequence; dates and completion are unknown."
             model.historyIsLive = true
             model.albumOptions = [AlbumCollection(id: "album-1", artist: "陳綺貞", title: "旅行的意義", tracks: []), AlbumCollection(id: "album-2", artist: "Nick Drake", title: "Pink Moon", tracks: [])]
@@ -53,6 +70,7 @@ import SwiftUI
             model.queryControl.cancel(); model.libraryDetailsControl.cancel(); model.menuSongControl.cancel()
             controller = AppDelegate()
             controller.model = model
+            model.openMonthlyRecap = { [weak self] in self?.controller.showMonthlyRecap() }
             controller.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             controller.window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 680), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             controller.window.title = "AM Track · Design preview"
@@ -77,14 +95,18 @@ import SwiftUI
         let model = controller.model!
         let previewSongs = model.suggestions
         do {
-            try renderAll(model)
+            if CommandLine.arguments.contains("--recap") || CommandLine.arguments.contains("--monthly") {
+                try renderRecap(model)
+            } else { try renderAll(model) }
             if keepOpen {
                 // Feedback expiry can start a ranking pass during the renders.
                 model.suggestionRequest += 1
                 model.suggestions = previewSongs
                 model.nextRecommendations = .distantFuture
                 show(model, tab: 4, size: NSSize(width: 1100, height: 680), dark: dark)
-                controller.showHistory()
+                if CommandLine.arguments.contains("--recap") || CommandLine.arguments.contains("--monthly") {
+                    controller.showMonthlyRecap()
+                } else { controller.showHistory() }
             } else {
                 NSStatusBar.system.removeStatusItem(controller.item)
                 try? FileManager.default.removeItem(at: folder)
@@ -166,6 +188,138 @@ import SwiftUI
         show(model, tab: 0, size: NSSize(width: 888, height: 462), dark: false)
         try save("setup-minimum")
         model.showSetup = false
+    }
+    private func recapScript(_ script: String) throws -> Any? {
+        var finished = false
+        var value: Any?
+        var failure: Error?
+        controller.monthlyRecap!.webView.evaluateJavaScript(script) { result, error in
+            value = result; failure = error; finished = true
+        }
+        let deadline = Date().addingTimeInterval(8)
+        while !finished && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        if let failure { throw failure }
+        guard finished else { throw AppError(message: "Recap script timed out.") }
+        return value
+    }
+    private func settleRecap() throws {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if controller.monthlyRecap!.ready,
+               (try? recapScript("document.getElementById('status').textContent.includes('Connecting')")) as? Bool == false { return }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        throw AppError(message: "Recap did not receive its local listening data.")
+    }
+    private func saveRecap(_ name: String) throws {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        var image: NSImage?
+        var finished = false
+        var failure: Error?
+        controller.monthlyRecap!.webView.takeSnapshot(with: nil) { result, error in
+            image = result; failure = error; finished = true
+        }
+        let deadline = Date().addingTimeInterval(8)
+        while !finished && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        if let failure { throw failure }
+        guard let tiff = image?.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+            throw AppError(message: "Could not capture the recap page.")
+        }
+        try png.write(to: output.appendingPathComponent(name + ".png"))
+        print("Rendered \(name)")
+    }
+    private func renderRecap(_ model: Model) throws {
+        let original = model.monthly
+        controller.showMonthlyRecap()
+        let recap = controller.monthlyRecap!
+        try settleRecap()
+        for (name, size) in [("normal", NSSize(width: 1180, height: 820)), ("minimum-width", NSSize(width: 760, height: 820)), ("minimum-height", NSSize(width: 1180, height: 572)), ("minimum", NSSize(width: 760, height: 572))] {
+            recap.window.setContentSize(size)
+            recap.window.center()
+            _ = try recapScript("window.scrollTo(0,0)")
+            try saveRecap("recap-" + name)
+            guard (try recapScript("document.documentElement.scrollWidth <= window.innerWidth")) as? Bool == true else {
+                throw AppError(message: "Recap overflows at " + name)
+            }
+        }
+        recap.window.setContentSize(NSSize(width: 1180, height: 820))
+        _ = try recapScript("window.scrollTo(0,500);document.getElementById('metric').focus();window.scrollY")
+        let before = try recapScript("window.scrollY") as? Double
+        let count = original.report(month: recap.month, category: .songs, metric: .entries).entryCount
+        let song = original.listens.first!
+        model.monthly.listens.append(MonthlyListen(id: "live-update-test", trackID: song.trackID, title: song.title, artist: song.artist,
+            album: song.album, albumArtist: song.albumArtist, observedAt: recap.month.addingTimeInterval(3600), seconds: 61))
+        recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        guard (try recapScript("Number(document.getElementById('entries').textContent.replaceAll(',',''))")) as? Int == count + 1,
+              (try recapScript("window.scrollY")) as? Double == before,
+              (try recapScript("document.activeElement.id")) as? String == "metric" else {
+            throw AppError(message: "Live recap update changed focus/scroll or missed the new entry.")
+        }
+        guard (try recapScript("[...document.querySelectorAll('.rank-bar')].every(bar => Number.parseFloat(bar.style.width) >= 0 && Number.parseFloat(bar.style.width) <= 100) && Number.parseFloat(document.querySelector('#song-list .rank-bar').style.width) === 100")) as? Bool == true,
+              (try recapScript("document.querySelectorAll('#day-chart .listening-line').length === 1 && document.querySelectorAll('#day-chart .grid-line').length === 4")) as? Bool == true else {
+            throw AppError(message: "Recap graphs must have proportional rank bars and a labeled daily scale.")
+        }
+        _ = try recapScript("document.querySelector('#day-chart .data-point').focus();document.querySelector('#day-chart .data-point').dispatchEvent(new Event('focus'))")
+        guard (try recapScript("document.getElementById('chart-readout').textContent.includes('min')")) as? Bool == true else {
+            throw AppError(message: "Daily graph values must be inspectable with keyboard focus.")
+        }
+        try saveRecap("recap-live-update")
+        _ = try recapScript("document.getElementById('metric').value='time';document.getElementById('metric').dispatchEvent(new Event('change'))")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        guard recap.metric == .time else { throw AppError(message: "Recap metric control did not reach the model.") }
+        _ = try recapScript("document.getElementById('previous').click()")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        guard recap.month < MonthlySnapshot.monthStart(Date()),
+              (try recapScript("document.getElementById('status').textContent")) as? String == "Archive" else {
+            throw AppError(message: "Recap month navigation did not load archived listening.")
+        }
+        _ = try recapScript("document.getElementById('next').click()")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        guard recap.month == MonthlySnapshot.monthStart(Date()) else { throw AppError(message: "Recap next month did not return to the current month.") }
+        _ = try recapScript("document.getElementById('more-songs').click();document.querySelector('details').open=true")
+        recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        guard (try recapScript("document.getElementById('song-list').children.length")) as? Int == 6,
+              (try recapScript("document.querySelector('details').open")) as? Bool == true else {
+            throw AppError(message: "Live updates must preserve expanded songs and methodology details.")
+        }
+        _ = try recapScript("document.getElementById('more-songs').click();document.querySelector('details').open=false")
+        recap.metric = .entries
+        // Metadata must remain inert text inside the local WebKit surface.
+        model.monthly = MonthlySnapshot(listens: [MonthlyListen(id: "escape", trackID: "escape", title: "<img src=x onerror=alert(1)>",
+            artist: "</script> & Artist", album: "Album", albumArtist: "Artist", observedAt: recap.month, seconds: 65)])
+        recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        guard (try recapScript("document.querySelectorAll('img,script:not([src])').length")) as? Int == 0,
+              (try recapScript("document.getElementById('song-list').textContent.includes('<img src=x')")) as? Bool == true else {
+            throw AppError(message: "Recap metadata must render as inert text.")
+        }
+        model.monthly = MonthlySnapshot(listens: [MonthlyListen(id: "long", trackID: "long", title: String(repeating: "A very long song title with 中文名字 ", count: 5),
+            artist: String(repeating: "An artist with a long name ", count: 4), album: String(repeating: "Album title ", count: 6), albumArtist: "Album artist", observedAt: recap.month, seconds: 3_000_000)])
+        recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        recap.window.setContentSize(NSSize(width: 760, height: 572))
+        _ = try recapScript("window.scrollTo(0,0)")
+        try saveRecap("recap-long-content")
+        guard (try recapScript("document.documentElement.scrollWidth <= window.innerWidth")) as? Bool == true else {
+            throw AppError(message: "Long recap names or large totals overflow the minimum window.")
+        }
+        model.monthly = MonthlySnapshot(); recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        recap.window.setContentSize(NSSize(width: 760, height: 572))
+        _ = try recapScript("window.scrollTo(0,0)")
+        try saveRecap("recap-empty")
+        model.monthly = original; recap.refresh()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        recap.window.setContentSize(NSSize(width: 1180, height: 820))
+        _ = try recapScript("window.scrollTo(0, document.getElementById('songs').offsetTop-25)")
+        try saveRecap("recap-songs")
+        _ = try recapScript("window.scrollTo(0, document.getElementById('albums').offsetTop-25)")
+        try saveRecap("recap-albums-activity")
+        _ = try recapScript("window.scrollTo(0,0)")
+        print("PASS: dedicated recap window, responsive sizes, long content, live updates, stable focus/scroll/expansions, metric/month controls, inert metadata and empty state. No Music or network calls.")
+        if !keepOpen { recap.window.close() }
     }
     func applicationWillTerminate(_ notification: Notification) {
         try? FileManager.default.removeItem(at: folder)

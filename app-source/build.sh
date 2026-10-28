@@ -20,12 +20,14 @@ app_root="$build_root/AM Track.app"
 /bin/mkdir -p "$app_root/Contents/MacOS" "$app_root/Contents/Resources"
 /bin/cp "$source_root/Info.plist" "$app_root/Contents/Info.plist"
 /bin/cp "$source_root/Resources/playback.js" "$source_root/Resources/sample.js" "$source_root/Resources/library.js" "$source_root/Resources/play.js" "$source_root/Resources/catalog.js" "$app_root/Contents/Resources/"
+/bin/mkdir -p "$app_root/Contents/Resources/Recap"
+/bin/cp "$source_root/Resources/Recap/"* "$app_root/Contents/Resources/Recap/"
 /usr/bin/xcrun clang -mmacosx-version-min=13.0 -fobjc-arc -Wno-incompatible-pointer-types -framework Foundation -framework AppKit \
   "$source_root/BackgroundQueue.m" -o "$app_root/Contents/MacOS/AMQueue"
 /usr/bin/codesign --force --sign - --identifier org.amtrack.app.queue "$app_root/Contents/MacOS/AMQueue"
 /usr/bin/xcrun swiftc -parse-as-library -swift-version 5 -target "$(/usr/bin/uname -m)-apple-macos13.0" "$optimization" \
   -module-cache-path "$source_root/.build/module-cache" \
-  -framework AppKit -framework SwiftUI "$source_root/main.swift" "$source_root/Interface.swift" "$source_root/DesignPreview.swift" "$source_root/HistoryStore.swift" "$source_root/Recommendations.swift" "$source_root/RecommendationRotation.swift" "$source_root/RecommendationRotationTests.swift" "$source_root/HistoryTests.swift" "$source_root/UnifiedHistory.swift" "$source_root/MusicPlayback.swift" "$source_root/MusicQueue.swift" "$source_root/AutomaticPlayback.swift" "$source_root/QueueLatency.swift" "$source_root/OneAheadTests.swift" "$source_root/CachedReserveTests.swift" "$source_root/CachedAlbumTests.swift" "$source_root/AlbumTaste.swift" "$source_root/RecommendationTests.swift" "$source_root/RecommendationReferenceTests.swift" \
+  -framework AppKit -framework SwiftUI -framework WebKit "$source_root/main.swift" "$source_root/Interface.swift" "$source_root/MonthlyRankings.swift" "$source_root/MonthlyRecapWindow.swift" "$source_root/MonthlyRankingsTests.swift" "$source_root/DesignPreview.swift" "$source_root/HistoryStore.swift" "$source_root/Recommendations.swift" "$source_root/RecommendationRotation.swift" "$source_root/RecommendationRotationTests.swift" "$source_root/HistoryTests.swift" "$source_root/UnifiedHistory.swift" "$source_root/MusicPlayback.swift" "$source_root/MusicQueue.swift" "$source_root/AutomaticPlayback.swift" "$source_root/QueueLatency.swift" "$source_root/OneAheadTests.swift" "$source_root/CachedReserveTests.swift" "$source_root/CachedAlbumTests.swift" "$source_root/AlbumTaste.swift" "$source_root/RecommendationTests.swift" "$source_root/RecommendationReferenceTests.swift" \
   -o "$app_root/Contents/MacOS/AMTrack"
 /usr/bin/codesign --force --sign - --identifier org.amtrack.app "$app_root"
 if [[ "$skip_tests" == false ]]; then

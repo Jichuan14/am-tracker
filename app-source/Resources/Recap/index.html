@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Monthly · AM Track</title>
+<link rel="stylesheet" href="recap.css">
+<script src="recap.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to recap</a>
+<header class="masthead">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">♪</span> AM TRACK <span class="brand-section">Monthly</span></div>
+  <div class="month-controls">
+    <button class="icon-button" id="previous" aria-label="Previous month">←</button>
+    <label class="sr-only" for="month">Month</label><select id="month"><option>Loading</option></select>
+    <button class="icon-button" id="next" aria-label="Next month">→</button>
+  </div>
+</header>
+<main id="main" class="content">
+  <div class="page-heading"><h1 id="month-name">Monthly</h1><div class="live-label"><span class="status-dot" id="status-dot"></span><span id="status">Loading</span></div></div>
+  <section class="stats" aria-label="Monthly totals">
+    <div class="primary-stat"><strong id="minutes">0</strong><span>Minutes</span></div>
+    <div><strong id="entries">0</strong><span>Entries</span></div>
+    <div><strong id="song-count">0</strong><span id="song-count-label">Songs</span></div>
+    <div><strong id="artist-count">0</strong><span id="artist-count-label">Artists</span></div>
+    <div><strong id="active-days">0</strong><span id="active-days-label">Days</span></div>
+  </section>
+  <section class="activity-section" id="activity" aria-labelledby="activity-heading">
+    <div class="section-heading"><h2 id="activity-heading">Daily listening <span class="unit">min</span></h2><output id="chart-readout" class="chart-readout" aria-live="polite"></output></div>
+    <div class="day-chart" id="day-chart" role="group" aria-label="Daily observed listening time"></div>
+    <div class="chart-legend"><span><i class="legend-line" aria-hidden="true"></i>Observed</span><span><i class="legend-future" aria-hidden="true"></i>Upcoming</span></div>
+  </section>
+  <div class="ranking-toolbar" id="ranking-toolbar"><h2>Rankings</h2><div class="rank-control"><label for="metric">By</label><select id="metric"><option value="entries">Entries</option><option value="time">Time</option></select></div></div>
+  <div class="ranking-grid">
+    <section class="chart-section" id="songs" aria-labelledby="songs-heading">
+      <div class="section-heading"><h3 id="songs-heading">Songs</h3><button class="icon-button export" data-category="songs" aria-label="Export song rankings" title="Export CSV">↗</button></div>
+      <div id="song-list" class="rank-list"></div>
+      <button class="show-more" id="more-songs" hidden>All songs ↓</button>
+    </section>
+    <section class="chart-section" id="artists" aria-labelledby="artists-heading">
+      <div class="section-heading"><h3 id="artists-heading">Artists</h3><button class="icon-button export" data-category="artists" aria-label="Export artist rankings" title="Export CSV">↗</button></div>
+      <div id="artist-list" class="rank-list"></div>
+      <button class="show-more" id="more-artists" hidden>All artists ↓</button>
+    </section>
+    <section class="chart-section album-section" id="albums" aria-labelledby="albums-heading">
+      <div class="section-heading"><h3 id="albums-heading">Albums</h3><button class="icon-button export" data-category="albums" aria-label="Export album rankings" title="Export CSV">↗</button></div>
+      <div id="album-list" class="rank-list"></div>
+      <button class="show-more" id="more-albums" hidden>All albums ↓</button>
+    </section>
+  </div>
+  <div class="empty-message" id="empty-message" hidden><h2>No recorded listens</h2><p id="empty-detail">Start recording in AM Track.</p></div>
+  <footer>
+    <div class="footer-status"><span id="updated">Loading</span><button class="icon-button" id="refresh" aria-label="Refresh recap" title="Refresh">↻</button></div>
+    <details><summary>Details</summary><p>Minutes are observed listening time on this Mac. Entries are reconciled history records, not confirmed completed plays. Each entry and its observed time belong to the month of its first recorded observation in your Mac’s time zone, including entries crossing a month boundary. Undated imports and lifetime play counts are excluded. Equal values share a rank; movement compares the same metric with the previous month. Artist rankings use song artist credits. Albums combine tracks only when title and album artist are known.</p><p id="provenance"></p></details>
+  </footer>
+</main>
+<div id="announcement" role="status" aria-live="polite" class="sr-only"></div>
+</body>
+</html>

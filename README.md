@@ -20,6 +20,28 @@ You can also check Music's `History.dat` manually to fill recording gaps. AM Tra
 
 ![History showing recorded listening, imported Music entries, search, and CSV export](docs/images/history.jpg)
 
+### Watch your month take shape
+
+Open **Monthly recap** from the main window or menu bar, or press **Command-Shift-M**.
+A dedicated window presents your month as a visual listening recap: compact
+listening totals, a daily listening graph, and proportional ranking bars for
+songs, artists, and albums. It updates every five seconds while
+open as the recorder saves new listening, without resetting your scroll or
+expanded lists. Recording off is shown as **Recording paused**.
+
+Browse earlier months, rank by **Recorded entries** or **Listening time**, see
+rank movement from the previous month, and export each complete chart as CSV.
+Everything runs locally inside AM Track, with no web server, account login,
+remote scripts, fonts, artwork lookups, or analytics.
+
+Charts use reconciled history with a recorded date in your Mac’s time zone.
+Each entry and its observed time belong to the month of its first observation,
+including entries that cross a month boundary. Entries do not imply completed
+plays. Undated imports and library lifetime counts are excluded. Artist charts
+use song artist credits; album tracks combine only when album title and album
+artist are known. Your recap covers recording on this Mac, not all-device Apple
+Music history. The recorder must run while you listen to add new observations.
+
 ### Find something worth playing again
 
 **For you** recommends songs and albums from your saved library. It combines listening history, library play counts, recent listening, and your feedback to bring back old favorites alongside less-played music. Each recommendation includes a short reason. Songs known to have played in the last 24 hours are excluded.

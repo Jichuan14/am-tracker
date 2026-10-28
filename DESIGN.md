@@ -51,3 +51,57 @@ warm-brown treatment and can be cleared by pressing it again. Native menu
 receipts offer Undo while available; menu rows stay stable until dismissal.
 Each receipt has an identity so an earlier expiry cannot dismiss a later click.
 Native press feedback is immediate, with no added animation.
+
+## Monthly recap: chart-first layout
+
+The dedicated recap window uses a compact, graph-first composition. Keep only
+month/status, five totals, daily activity, category rankings, and controls in the
+main reading path. Remove promotional headlines, captions, featured-artist art,
+and repeated per-row unit labels. Details remain collapsed in the footer.
+
+### Palette and type
+
+Paper `#f6f4ef`, ink `#191a17`, muted `#66675f`, dividers `#d9d8cf`, coral
+`#bf4233`, olive `#777d28`. Apple system type with local CJK fallbacks, no remote
+fonts. Month heading 26–29 px, totals 29–34 px, section headings 14–16 px,
+music labels 12 px, metadata and units 10–11 px. Numbers use tabular figures.
+
+### Graphs and components
+
+Daily listening is a coral line with a quiet area fill. Label minutes on the
+vertical axis and dates on the horizontal axis. Future dates have a neutral
+background and no invented zero observations. Keyboard-focusable points and
+pointer inspection reveal the exact date and observed minutes in a short
+readout. Empty observed days retain real zero values.
+
+Songs, artists and albums use horizontal bars with a common zero baseline
+within each category. Bar lengths use entries or observed seconds according
+to the selected metric; totals and rank movement align on the right. Unit
+selection appears once in the ranking toolbar. Songs and artists sit side by
+side; albums span the content column. Long metadata wraps naturally.
+
+### Layout and depth
+
+Use a 62 px masthead, compact title and five-column totals, a 174–190 px daily
+plot, then ruled ranking lists. Gutters are 4%, section gaps 25 px, ranking rows
+about 69 px. Flat semantic surfaces, 1 px separators, 2 px chart strokes and
+5 px bars provide hierarchy. No decorative cards, record illustrations, large
+marketing cover, gradients or entrance animation.
+
+### Responsive and live behavior
+
+Preserve the 1180 × 820 default and 760 × 600 minimum native window frame.
+Charts measure their viewport so axes stay readable during resize. Below
+600 px the category columns stack. The five-second local model refresh keeps
+scroll, metric/month choice, expanded lists, details and chart focus stable.
+Pointer press feedback uses scale .96 for 120 ms; reduced motion disables it.
+
+### Data and maintenance
+
+Keep all metadata as inert text nodes; bundle resources locally with restrictive
+CSP and ephemeral WebKit storage. The page uses canonical, dated history and
+observed time, not inferred completed plays. No remote artwork is fetched.
+Edit `Resources/Recap/recap.css` as the single CSS strategy, `recap.js` for safe
+stateful rendering, and `index.html` for semantic structure. Native window and
+CSV behavior stay in `MonthlyRecapWindow.swift`. Production supplies real data;
+`--design-preview OUTPUT --recap` uses isolated sample data for verification.

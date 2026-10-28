@@ -60,3 +60,13 @@
 !/docs/images/window-for-you.png
 !/docs/images/window-history.png
 !/docs/images/feedback-confirmation.png
+
+# Monthly history rankings and isolated checks.
+!/app-source/MonthlyRankings.swift
+!/app-source/MonthlyRecapWindow.swift
+!/app-source/MonthlyRankingsTests.swift
+
+!/app-source/Resources/Recap/
+!/app-source/Resources/Recap/index.html
+!/app-source/Resources/Recap/recap.css
+!/app-source/Resources/Recap/recap.js
