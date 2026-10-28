@@ -34,7 +34,7 @@ rank movement from the previous month, and export each complete chart as CSV.
 Everything runs locally inside AM Track, with no web server, account login,
 remote scripts, fonts, artwork lookups, or analytics.
 
-Charts use reconciled history with a recorded date in your Mac’s time zone.
+Charts group dated, reconciled history into Gregorian months in your Mac’s time zone.
 Each entry and its observed time belong to the month of its first observation,
 including entries that cross a month boundary. Entries do not imply completed
 plays. Undated imports and library lifetime counts are excluded. Artist charts

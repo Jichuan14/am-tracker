@@ -46,11 +46,11 @@ import SwiftUI
             var monthlyListens: [MonthlyListen] = []
             for (i, t) in tracks.enumerated() {
                 for previous in [false, true] {
-                    let start = Calendar.current.date(byAdding: .month, value: previous ? -1 : 0, to: month)!
+                    let start = MonthlySnapshot.calendar.date(byAdding: .month, value: previous ? -1 : 0, to: month)!
                     let count = previous ? [12, 17, 8, 0, 5, 3][i] : [23, 19, 14, 11, 7, 4][i]
-                    let availableDays = previous ? Calendar.current.range(of: .day, in: .month, for: start)!.count : Calendar.current.component(.day, from: Date())
+                    let availableDays = previous ? MonthlySnapshot.calendar.range(of: .day, in: .month, for: start)!.count : MonthlySnapshot.calendar.component(.day, from: Date())
                     for n in 0..<count {
-                        let day = Calendar.current.date(byAdding: .day, value: (n * 7 + i * 3) % availableDays, to: start)!
+                        let day = MonthlySnapshot.calendar.date(byAdding: .day, value: (n * 7 + i * 3) % availableDays, to: start)!
                         monthlyListens.append(MonthlyListen(id: "monthly-\(previous)-\(i)-\(n)", trackID: "preview-\(i)",
                             title: t.0, artist: t.1, album: t.2, albumArtist: t.1,
                             observedAt: day.addingTimeInterval(Double(3600 + n * 90 + i * 220)), seconds: Double(137 + i * 23 + n * 3)))

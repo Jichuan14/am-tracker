@@ -92,3 +92,8 @@ ephemeral WKWebView, native CSV export, and strict local-document bridge. No
 HTTP server or remote assets are involved. The open page checks the published
 monthly model every five seconds; recording continues through the existing
 recorder. Month/metric selections and list expansion remain stable on updates.
+
+Monthly charts and CSV keys use Gregorian months in the local time zone. The
+recap rebases its selected civil month when the system time zone changes.
+CSV export captures the chart’s calendar and metric before opening the save
+sheet so a later time-zone change cannot relabel the saved month.

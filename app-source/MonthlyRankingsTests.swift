@@ -71,6 +71,28 @@ func monthlyRankingTests() throws {
     let emptyPayload = MonthlySnapshot().recapPayload(month: march, metric: .entries, recording: false, now: march, calendar: calendar)
     try check(emptyPayload["entries"] as? Int == 0 && (emptyPayload["songs"] as? [[String: Any]])?.isEmpty == true, "empty recap sends real zeroes without sample music")
 
+    let la = MonthlySnapshot.localCalendar(timeZone: TimeZone(identifier: "America/Los_Angeles")!)
+    let honolulu = MonthlySnapshot.localCalendar(timeZone: TimeZone(identifier: "Pacific/Honolulu")!)
+    let october = MonthlySnapshot.monthStart(date("2026-10-15T12:00:00Z"), calendar: la)
+    let rebased = MonthlySnapshot.rebasedMonth(october, from: la, to: honolulu)
+    try check(honolulu.component(.month, from: october) == 9, "time-zone regression fixture crosses the local month boundary")
+    try check(honolulu.component(.month, from: rebased) == 10 && rebased == MonthlySnapshot.monthStart(rebased, calendar: honolulu), "selected civil month survives a westward time-zone change")
+    let prior = honolulu.date(byAdding: .month, value: -1, to: rebased)!
+    try check(honolulu.date(byAdding: .month, value: 1, to: prior) == rebased, "previous/next remain anchored to month starts after changing zones")
+    let exportFixture = MonthlySnapshot(listens: [listen("export-zone", "zone", "2026-10-15T12:00:00Z")])
+    let exportReport = exportFixture.report(month: october, category: .songs, metric: .entries, calendar: la)
+    let fixedExport = monthlyCSV(exportReport, category: .songs, metric: .entries, calendar: la)
+    let changedExport = monthlyCSV(exportReport, category: .songs, metric: .entries, calendar: honolulu)
+    try check(fixedExport.contains("2026-10") && changedExport.contains("2026-09"), "exports retain their captured calendar when the system zone changes while saving")
+    for locale in ["en_US@calendar=chinese", "en_US@calendar=hebrew", "th_TH@calendar=buddhist"] {
+        let local = MonthlySnapshot.localCalendar(timeZone: TimeZone(secondsFromGMT: 0)!, locale: Locale(identifier: locale))
+        try check(local.identifier == .gregorian, "non-Gregorian system preferences cannot change chart month identity")
+        let july = MonthlySnapshot().recapPayload(month: date("2025-07-01T12:00:00Z"), metric: .entries, recording: false, now: date("2026-10-15T12:00:00Z"), calendar: local)
+        let august = MonthlySnapshot().recapPayload(month: date("2025-08-01T12:00:00Z"), metric: .entries, recording: false, now: date("2026-10-15T12:00:00Z"), calendar: local)
+        try check(july["month"] as? String == "2025-07" && august["month"] as? String == "2025-08", "leap-calendar preferences cannot collide month keys")
+        try check(july["year"] as? Int == 2025 && july["monthNumber"] as? Int == 7, "recap year/month fields agree with Gregorian CSV keys")
+    }
+
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("am-track-monthly-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let archive = try Archive(folder: folder)

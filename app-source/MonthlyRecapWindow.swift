@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 extension MonthlySnapshot {
     func recapPayload(month: Date, metric: MonthlyMetric, recording: Bool, now: Date = Date(),
-                      calendar: Calendar = .current) -> [String: Any] {
+                      calendar: Calendar = MonthlySnapshot.calendar) -> [String: Any] {
         let start = Self.monthStart(month, calendar: calendar)
         let current = Self.monthStart(now, calendar: calendar)
         let report = self.report(month: start, category: .songs, metric: metric, calendar: calendar)
@@ -35,9 +35,9 @@ extension MonthlySnapshot {
         }
         let choices = Array(Set(listens.compactMap { $0.observedAt.map { Self.monthStart($0, calendar: calendar) } } + [current, start]))
             .filter { $0 <= current }.sorted(by: >).map { date in
-                ["key": monthKey(date), "label": date.formatted(.dateTime.month(.wide).year())]
+                ["key": monthKey(date), "label": Self.monthLabel(date, calendar: calendar)]
             }
-        return ["month": monthKey(start), "monthName": start.formatted(.dateTime.month(.wide)),
+        return ["month": monthKey(start), "monthName": Self.monthLabel(start, calendar: calendar, includeYear: false),
                 "year": parts.year!, "monthNumber": parts.month!, "months": choices,
                 "current": start == current, "recording": recording, "metric": metric == .entries ? "entries" : "time",
                 "minutes": Int(report.seconds / 60), "duration": monthlyDuration(report.seconds),
@@ -57,6 +57,7 @@ extension MonthlySnapshot {
     let webView: WKWebView
     var month = MonthlySnapshot.monthStart(Date())
     var metric: MonthlyMetric = .entries
+    private var monthCalendar = MonthlySnapshot.calendar
     private(set) var ready = false
     private var timer: Timer?
     private var lastPayload: Data?
@@ -97,10 +98,19 @@ extension MonthlySnapshot {
         }
     }
     func windowWillClose(_ notification: Notification) { timer?.invalidate(); timer = nil }
+    private func syncMonthCalendar() {
+        let current = MonthlySnapshot.calendar
+        if current.timeZone != monthCalendar.timeZone {
+            month = min(MonthlySnapshot.rebasedMonth(month, from: monthCalendar, to: current),
+                        MonthlySnapshot.monthStart(Date(), calendar: current))
+        }
+        monthCalendar = current
+    }
     func refresh() {
+        syncMonthCalendar()
         guard ready else { return }
         if delivering { pendingUpdate = true; return }
-        let payload = model.monthly.recapPayload(month: month, metric: metric, recording: model.recording)
+        let payload = model.monthly.recapPayload(month: month, metric: metric, recording: model.recording, calendar: monthCalendar)
         guard let encoded = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]), encoded != lastPayload else { return }
         delivering = true
         webView.callAsyncJavaScript("window.Recap.update(payload)", arguments: ["payload": payload], in: nil, in: .page) { [weak self] result in
@@ -120,17 +130,18 @@ extension MonthlySnapshot {
         Task { @MainActor [weak self] in self?.handleCommand(action, value: value, category: category) }
     }
     private func handleCommand(_ action: String, value: String, category: String) {
+        syncMonthCalendar()
         switch action {
         case "ready": ready = true; refresh()
         case "month":
             if !value.isEmpty {
                 let parts = value.split(separator: "-").compactMap { Int($0) }
                 if parts.count == 2, (1...9999).contains(parts[0]), (1...12).contains(parts[1]),
-                   let date = Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: 1)),
+                   let date = monthCalendar.date(from: DateComponents(year: parts[0], month: parts[1], day: 1)),
                    date <= MonthlySnapshot.monthStart(Date()) { month = date; refresh() }
             }
         case "previous", "next":
-            if let date = Calendar.current.date(byAdding: .month, value: action == "previous" ? -1 : 1, to: month),
+            if let date = monthCalendar.date(byAdding: .month, value: action == "previous" ? -1 : 1, to: month),
                date <= MonthlySnapshot.monthStart(Date()) { month = date; refresh() }
         case "metric": metric = value == "time" ? .time : .entries; refresh()
         case "refresh": model.reload(); refresh()
@@ -153,15 +164,17 @@ extension MonthlySnapshot {
         }
     }
     private func export(_ category: MonthlyCategory) {
-        let report = model.monthly.report(month: month, category: category, metric: metric)
+        let exportCalendar = monthCalendar
+        let exportMetric = metric
+        let report = model.monthly.report(month: month, category: category, metric: exportMetric, calendar: exportCalendar)
         guard !report.rows.isEmpty else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
-        let parts = Calendar.current.dateComponents([.year, .month], from: month)
+        let parts = exportCalendar.dateComponents([.year, .month], from: month)
         panel.nameFieldStringValue = String(format: "monthly-%04d-%02d-%@.csv", parts.year!, parts.month!, category.rawValue.lowercased())
         panel.beginSheetModal(for: window) { response in
             guard response == .OK, let url = panel.url else { return }
-            do { try monthlyCSV(report, category: category, metric: self.metric).write(to: url, atomically: true, encoding: .utf8) }
+            do { try monthlyCSV(report, category: category, metric: exportMetric, calendar: exportCalendar).write(to: url, atomically: true, encoding: .utf8) }
             catch {
                 let alert = NSAlert(); alert.messageText = "Could not export rankings"; alert.informativeText = error.localizedDescription
                 alert.beginSheetModal(for: self.window)

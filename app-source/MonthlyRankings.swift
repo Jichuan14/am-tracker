@@ -61,15 +61,35 @@ struct MonthlyReport {
 
 struct MonthlySnapshot: Equatable {
     var listens: [MonthlyListen] = []
+    // Charts and CSV keys use Gregorian months in the Mac's local time zone,
+    // independent of calendars with leap months or more than twelve months.
+    static func localCalendar(timeZone: TimeZone = .current, locale: Locale = .current) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone; calendar.locale = locale
+        return calendar
+    }
+    static var calendar: Calendar { localCalendar() }
+    static func rebasedMonth(_ month: Date, from previous: Calendar, to calendar: Calendar) -> Date {
+        var fields = previous.dateComponents([.year, .month], from: month)
+        fields.day = 1
+        return monthStart(calendar.date(from: fields) ?? month, calendar: calendar)
+    }
+    static func monthLabel(_ month: Date, calendar: Calendar, includeYear: Bool = true) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = calendar.locale ?? .current
+        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate(includeYear ? "MMMM y" : "MMMM")
+        return formatter.string(from: month)
+    }
     var availableMonths: [Date] {
         Array(Set(listens.compactMap { $0.observedAt.map { Self.monthStart($0) } }))
             .filter { $0 <= Self.monthStart(Date()) }.sorted(by: >)
     }
-    static func monthStart(_ date: Date, calendar: Calendar = .current) -> Date {
+    static func monthStart(_ date: Date, calendar: Calendar = MonthlySnapshot.calendar) -> Date {
         calendar.dateInterval(of: .month, for: date)!.start
     }
     func report(month: Date, category: MonthlyCategory, metric: MonthlyMetric,
-                calendar: Calendar = .current) -> MonthlyReport {
+                calendar: Calendar = MonthlySnapshot.calendar) -> MonthlyReport {
         let start = Self.monthStart(month, calendar: calendar)
         let end = calendar.date(byAdding: .month, value: 1, to: start)!
         let previous = calendar.date(byAdding: .month, value: -1, to: start)!
@@ -156,7 +176,7 @@ func monthlyDuration(_ seconds: Double) -> String {
     return "\(minutes)m"
 }
 
-func monthlyCSV(_ report: MonthlyReport, category: MonthlyCategory, metric: MonthlyMetric, calendar: Calendar = .current) -> String {
+func monthlyCSV(_ report: MonthlyReport, category: MonthlyCategory, metric: MonthlyMetric, calendar: Calendar = MonthlySnapshot.calendar) -> String {
     func escape(_ text: String) -> String {
         var value = text
         if let first = value.drop(while: { $0 == " " }).first, "=+-@\t\r\n".contains(first) { value = "'" + value }

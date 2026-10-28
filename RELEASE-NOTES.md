@@ -1,13 +1,13 @@
-# AM Track 2.9.0 Beta 4
+# AM Track 2.9.0 Beta 5
 
 For Apple Silicon Macs running macOS 13 or later.
 
-1. **Updated interface:** Refreshed History and For you views with clearer playback status, recommendation details, search, and feedback controls.
-2. **Scrollable dropdown:** Browse the full recommendation batch directly in the menu bar dropdown instead of opening a separate window.
-3. **Readable song rows:** Each dropdown recommendation shows the song title on the first line and artist on the second, with long text truncated to fit.
-4. **Feedback confirmation:** Like shows a brief confirmation and Undo action while keeping the saved preference.
+1. **Monthly recap:** Open a dedicated window with listening totals, a daily graph, and ranked bars for songs, artists, and albums from the app, menu bar, or Command-Shift-M.
+2. **Live updates:** The recap refreshes every five seconds as recording continues, preserving your scroll position, selected month, and expanded lists.
+3. **Calendar navigation:** Month selection stays consistent when the Mac changes time zones or uses a non-Gregorian system calendar.
+4. **Compare and export:** Browse earlier months, rank by entries or observed listening time, see movement from the previous month, and export each complete chart as CSV.
 
-Download `AM-Track-2.9.0-beta.4-macOS-arm64.zip`, quit AM Track, then unzip the download and replace the old `AM Track.app` in Applications. Your listening data stays in its existing data folder. The matching `.sha256` file contains the ZIP's SHA-256 checksum. GitHub's automatically generated source-code archives require building the app yourself.
+Download `AM-Track-2.9.0-beta.5-macOS-arm64.zip`, quit AM Track, then unzip the download and replace the old `AM Track.app` in Applications. Your listening data stays in its existing data folder. The matching `.sha256` file contains the ZIP's SHA-256 checksum. GitHub's automatically generated source-code archives require building the app yourself.
 
 This beta is ad hoc signed and is **not notarized by Apple**. If macOS blocks opening it, follow the included installation guide and use **System Settings > Privacy & Security > Open Anyway** for AM Track if you trust the download. See [Apple's instructions](https://support.apple.com/102445).
 
