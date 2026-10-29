@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 
 @MainActor func manualHistoryTests() throws {
     let folder=FileManager.default.temporaryDirectory.appendingPathComponent("am-track-manual-"+UUID().uuidString)
@@ -552,6 +553,24 @@ func maintenance(_ folder:URL) throws {
     controller.model = model
     controller.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     defer { NSStatusBar.system.removeStatusItem(controller.item) }
+    let button = controller.item.button!
+    let tooltipWrites = OSAllocatedUnfairLock(initialState: 0)
+    let tooltipObservation = button.observe(\.toolTip, options: [.new]) { _, _ in tooltipWrites.withLock { $0 += 1 } }
+    defer { tooltipObservation.invalidate() }
+    controller.statusMenuIsOpen = true
+    controller.updateMenu()
+    try check(tooltipWrites.withLock { $0 } == 1 && button.toolTip == "AM Track: Music access is not enabled",
+              "initial status installs its tooltip")
+    for _ in 0..<10 { controller.updateMenu() }
+    try check(tooltipWrites.withLock { $0 } == 1, "unchanged background refreshes must not reassign the status tooltip")
+    try model.allowCollection(recordOnLaunch: false)
+    try check(tooltipWrites.withLock { $0 } == 1, "the fixture does not refresh the menu implicitly")
+    controller.updateMenu()
+    try check(tooltipWrites.withLock { $0 } == 2 && button.toolTip == "AM Track: Recording is off",
+              "a changed status updates its tooltip exactly once")
+    controller.updateMenu()
+    try check(tooltipWrites.withLock { $0 } == 2, "the changed status also stays stable on repeated refreshes")
+    controller.statusMenuIsOpen = false
     for message in ["Started Comfortably Numb in Music. Queued 1 recommendation.", String(repeating: "很长的播放状态 WWW ", count: 12)] {
         model.playbackMessage = message
         model.error = message

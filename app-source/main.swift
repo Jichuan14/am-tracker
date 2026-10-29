@@ -846,7 +846,9 @@ func displayDate(_ string: String?) -> String {
         button.image=NSImage(systemSymbolName:needsCheck ? "exclamationmark.circle" : model.recording ? "waveform" : "music.note",accessibilityDescription:"AM Track")
         button.image?.isTemplate=true
         button.title = " " + (model.recording ? "On" : "Off")
-        button.toolTip="AM Track: \(model.status)"
+        let toolTip="AM Track: \(model.status)"
+        // Background polls must not repeatedly register the same native tooltip.
+        if button.toolTip != toolTip { button.toolTip=toolTip }
         // Keep recommendation rows stable beneath the pointer until the menu closes.
         guard !statusMenuIsOpen else { return }
         let menu=item.menu ?? NSMenu();menu.delegate=self;menu.autoenablesItems=false;menu.removeAllItems()
