@@ -60,8 +60,16 @@ extension Model {
         guard playbackTrackID == nil else { return }
         playbackError=""
         if automaticQueue.enabled {
-            playbackMessage=automaticQueue.pendingReplacements>0 ? "Preparing the next song…" : "One recommended song is already queued next."
-            replenishAutomaticQueue();return
+            // Reconcile the latest playback before claiming a successor is still
+            // pending. This also recovers a missed/remapped observation on click.
+            if let current=menuSample { observeAutomaticQueue(current) }
+            if automaticQueue.enabled {
+                if playbackTrackID == nil {
+                    playbackMessage=automaticQueue.pendingReplacements>0 ? "Preparing the next song…" : "One recommended song is already queued next."
+                    replenishAutomaticQueue()
+                }
+                refreshMenuSong();onChange?();return
+            }
         }
         playbackMessage="Preparing the next song…"
         startAutomaticQueue(currentID:menuSample?.musicPersistentID)

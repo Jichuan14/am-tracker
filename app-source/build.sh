@@ -19,7 +19,7 @@ esac
 app_root="$build_root/AM Track.app"
 /bin/mkdir -p "$app_root/Contents/MacOS" "$app_root/Contents/Resources"
 /bin/cp "$source_root/Info.plist" "$app_root/Contents/Info.plist"
-/bin/cp "$source_root/Resources/playback.js" "$source_root/Resources/sample.js" "$source_root/Resources/library.js" "$source_root/Resources/play.js" "$source_root/Resources/catalog.js" "$app_root/Contents/Resources/"
+/bin/cp "$source_root/Resources/read-worker.js" "$source_root/Resources/playback.js" "$source_root/Resources/sample.js" "$source_root/Resources/library.js" "$source_root/Resources/play.js" "$source_root/Resources/catalog.js" "$app_root/Contents/Resources/"
 /bin/mkdir -p "$app_root/Contents/Resources/Recap"
 /bin/cp "$source_root/Resources/Recap/"* "$app_root/Contents/Resources/Recap/"
 /usr/bin/xcrun clang -mmacosx-version-min=13.0 -fobjc-arc -Wno-incompatible-pointer-types -framework Foundation -framework AppKit \

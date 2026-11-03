@@ -38,6 +38,30 @@ private final class QueueTestLog {
         let d=details(pid)
         return Sample(["running":true,"state":"playing","persistent_id":runtimeID,"track_class":"urlTrack","title":d.title,"artist":d.artist,"album":d.album,"duration":d.duration])
     }
+    let releases=try fixture("release-chain"),releaseLog=QueueTestLog()
+    releases.catalogResolveOverride=resolve
+    releases.queueAppendOverride={ request in releaseLog.append(request["catalog_id"] as! String);return 1 }
+    releases.nextForYou()
+    try wait({releaseLog.snapshot.count==1 && releases.playbackTrackID==nil},"release fixture queues its first song")
+    for index in 0..<12 {
+        let pid=releases.automaticQueue.songs.last!.first!
+        var info=sample(pid,String(format:"%016X",0xE100+index)).albumMetadata
+        if index>=6 { info["album"]="Catalog album release" }
+        let playing=Sample(info)
+        releases.menuSample=playing
+        if index==6 {
+            // A click must reconcile an unprocessed observation before claiming a song is pending.
+            releases.nextForYou()
+        } else { releases.observeAutomaticQueue(playing) }
+        try wait({releaseLog.snapshot.count==index+2 && releases.playbackTrackID==nil},"song \(index+1) replenishes across a release change, including explicit Next recovery")
+        for _ in 0..<100 { releases.observeAutomaticQueue(playing) }
+        releases.nextForYou()
+        try expect(releaseLog.snapshot.count==index+2 && releases.automaticQueue.pendingReplacements==0,"repeated observations and Next cannot stack successors")
+        try expect(releases.automaticQueue.songs.count==2,"the release chain retains only current-plus-one songs")
+    }
+    releases.stopAutomaticQueue()
+    print("PASS: twelve automatic transitions, mid-chain release changes, Next reconciliation and no duplicate additions. Fake Music only.")
+
     let model=try fixture("prepared"),log=QueueTestLog(),calls=QueueTestLog()
     let resolverGate=DispatchSemaphore(value:0),ackGate=DispatchSemaphore(value:0)
     defer { resolverGate.signal();ackGate.signal() }

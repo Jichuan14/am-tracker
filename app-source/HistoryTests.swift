@@ -387,7 +387,69 @@ func maintenance(_ folder:URL) throws {
 }
 
 
+func queueReleaseMatchingTests() throws {
+    func expect(_ value:Bool,_ message:String) throws {
+        guard value else { throw AppError(message:"Queue release matching test: "+message) }
+    }
+    let previous="0000000000000001",library="7A26E1E07233E2FB",runtime="B0A02E32CBFAE994",next="0000000000000002"
+    let single=QueueSongMetadata(title:"Round Town (feat. Asiah)",artist:"Adrian Daniel",album:"Round Town (feat. Asiah) - Single",duration:168.42799377441406)
+    let album=QueueSongMetadata(title:single.title,artist:single.artist,album:"Nightwolf",duration:168.3800048828125)
+    func sample(_ details:QueueSongMetadata,_ id:String=runtime,_ kind:String="urlTrack",_ state:String="playing") -> Sample {
+        Sample(["running":true,"state":state,"persistent_id":id,"track_class":kind,
+                "title":details.title,"artist":details.artist,"album":details.album,"duration":details.duration])
+    }
+    func fixture() -> AutomaticQueue {
+        var queue=AutomaticQueue()
+        queue.start(queued:[[library]],currentID:previous)
+        queue.register([CatalogQueueSong(index:0,persistentID:library,catalogID:"12345",metadata:single)])
+        return queue
+    }
+    var queue=fixture()
+    queue.observe(sample(single))
+    try expect(queue.pendingReplacements==1,"control: exact release metadata advances the queue")
+    queue=fixture()
+    queue.observe(sample(album))
+    try expect(queue.pendingReplacements==1,"single-to-album metadata difference must request a successor")
+    queue.pendingReplacements=0
+    // Once matched, the runtime ID survives incomplete metadata on a later poll.
+    let incomplete=QueueSongMetadata(title:single.title,artist:"",album:"",duration:0)
+    for _ in 0..<100 { queue.observe(sample(incomplete)) }
+    try expect(queue.pendingReplacements==0,"bound playback identity never requests duplicate successors")
+    queue.append([[next]])
+    queue.register([CatalogQueueSong(index:0,persistentID:next,catalogID:"12346",metadata:single)])
+    queue.observe(sample(album,"B0A02E32CBFAE995"))
+    try expect(queue.pendingReplacements==0,"indistinguishable active recordings remain ambiguous")
+    queue.observe(sample(single,next))
+    try expect(queue.pendingReplacements==1,"a direct next-song identity advances despite metadata ambiguity")
+    let other=QueueSongMetadata(title:"Different song",artist:single.artist,album:single.album,duration:single.duration)
+    queue.start(queued:[[library],[next]],currentID:previous)
+    queue.register([CatalogQueueSong(index:0,persistentID:library,catalogID:"12345",metadata:album),
+                    CatalogQueueSong(index:1,persistentID:next,catalogID:"12346",metadata:other)])
+    queue.observe(sample(album,library));queue.observe(sample(other,next))
+    queue.pendingReplacements=0
+    queue.append([["0000000000000003"]])
+    queue.register([CatalogQueueSong(index:0,persistentID:"0000000000000003",catalogID:"12347",metadata:album)])
+    queue.observe(sample(album,"B0A02E32CBFAE996"))
+    try expect(queue.pendingReplacements==1,"retired metadata cannot make an active match ambiguous")
+    for bad in [QueueSongMetadata(title:single.title,artist:"Other artist",album:album.album,duration:single.duration),
+                QueueSongMetadata(title:single.title,artist:single.artist,album:album.album,duration:200),
+                QueueSongMetadata(title:single.title,artist:single.artist,album:"",duration:single.duration)] {
+        queue=fixture();queue.observe(sample(bad))
+        try expect(queue.pendingReplacements==0,"artist, duration and incomplete metadata remain guarded")
+    }
+    queue=fixture();queue.observe(sample(album,runtime,"fileTrack"))
+    try expect(queue.pendingReplacements==0,"unrelated library tracks do not use release fallback")
+    queue=fixture();queue.observe(sample(album,runtime,"urlTrack","paused"))
+    try expect(queue.pendingReplacements==0,"paused observations cannot advance the queue")
+    queue.start(queued:[[library]],albumIDs:[previous])
+    queue.register([CatalogQueueSong(index:0,persistentID:library,catalogID:"12345",metadata:single)])
+    queue.observe(sample(album))
+    try expect(!queue.waitingForAlbum && queue.pendingReplacements==1,"a remapped first follow-up releases the album gate")
+    print("PASS: single/album release matching, runtime identity binding, active-only ambiguity checks and conservative guards.")
+}
+
 @MainActor func automaticQueueTests() throws {
+    try queueReleaseMatchingTests()
     func expect(_ value:Bool,_ message:String) throws {
         guard value else { throw AppError(message:"Automatic queue test: "+message) }
     }
@@ -605,5 +667,59 @@ func maintenance(_ folder:URL) throws {
             try check(scroll.contentView.bounds.minY > 0, "later recommendations can scroll into view")
         }
     }
+    let stableMenu=controller.item.menu!
+    let stableItems=stableMenu.items
+    let stableHeader=controller.menuHeadingView
+    let stableRecommendations=controller.menuRecommendationsView
+    for _ in 0..<20 { controller.updateMenu() }
+    try check(zip(stableItems,stableMenu.items).allSatisfy { $0 === $1 }, "unchanged menu updates preserve every item")
+    try check(stableHeader === controller.menuHeadingView && stableRecommendations === controller.menuRecommendationsView,
+              "unchanged menu refreshes reuse hosting and table views")
+    model.playbackMessage="A changed message";controller.updateMenu()
+    try check(stableHeader === controller.menuHeadingView && stableRecommendations === controller.menuRecommendationsView,
+              "changed menu content also reuses hosting and table views")
+    controller.statusMenuIsOpen=true
+    let visibleTitles=stableMenu.items.map { $0.title }
+    model.playbackMessage="Deferred change";controller.updateMenu()
+    try check(visibleTitles==stableMenu.items.map { $0.title }, "open menu content stays stable")
+    controller.statusMenuIsOpen=false;controller.updateMenu()
+    try check(stableMenu.items.contains { $0.title=="Deferred change" }, "pending presentation applies after closing")
     print("PASS: narrow native menu with long English/CJK messages and recommendation identities.")
+}
+
+
+@MainActor func readWorkerTests() throws {
+    let root=FileManager.default.temporaryDirectory.appendingPathComponent("am-read-worker-"+UUID().uuidString)
+    try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+    defer { try? FileManager.default.removeItem(at:root) }
+    guard let worker=Bundle.main.url(forResource:"read-worker",withExtension:"js") else { throw AppError(message:"Missing worker fixture") }
+    try FileManager.default.copyItem(at:worker,to:root.appendingPathComponent("read-worker.js"))
+    // No Music events: fixtures exercise the real transport, errors, timeout and cancellation.
+    let sources=["playback":"JSON.stringify({running:false,pid:Number($.NSProcessInfo.processInfo.processIdentifier),title:'歌曲 🎵',bulk:Array(131074).join('x')});",
+                 "sample":"throw new Error('fixture failure');",
+                 "library":"delay(2);JSON.stringify({running:false});"]
+    for (name,source) in sources { try source.write(to:root.appendingPathComponent(name+".js"),atomically:true,encoding:.utf8) }
+    let control=QueryControl();defer { control.cancel() }
+    let first=try control.read("playback",resourceRoot:root)
+    try check(first["title"] as? String=="歌曲 🎵" && (first["bulk"] as? String)?.count==131073,
+              "framed reads preserve Unicode and responses larger than pipe buffers")
+    for _ in 0..<5 {
+        let next=try control.read("playback",resourceRoot:root)
+        try check(next["pid"] as? Int==first["pid"] as? Int, "successive reads reuse a single interpreter")
+    }
+    do { _=try control.read("sample",resourceRoot:root);throw AppError(message:"expected worker script failure") }
+    catch { try check(error.localizedDescription.contains("fixture failure"), "script errors reach the caller") }
+    let restarted=try control.read("playback",resourceRoot:root)
+    try check(restarted["pid"] as? Int != first["pid"] as? Int, "failed worker is replaced on the next read")
+    let start=ProcessInfo.processInfo.systemUptime
+    do { _=try control.read("library",resourceRoot:root,timeout:0.1);throw AppError(message:"expected timeout") }
+    catch { try check(error.localizedDescription.contains("did not respond"), "blocked reads time out") }
+    try check(ProcessInfo.processInfo.systemUptime-start<1.5, "timeout does not wait for script completion")
+    _=try control.read("playback",resourceRoot:root)
+    DispatchQueue.global().asyncAfter(deadline:.now()+0.1) { control.cancel() }
+    do { _=try control.read("library",resourceRoot:root);throw AppError(message:"expected cancellation") }
+    catch { try check(error.localizedDescription.contains("disconnected") || error.localizedDescription.contains("stopped"), "cancel interrupts the worker") }
+    do { _=try control.read("playback",resourceRoot:root);throw AppError(message:"cancelled worker relaunched") }
+    catch { try check(error.localizedDescription.contains("cancelled"), "cancelled controls cannot relaunch a reader") }
+    print("PASS: persistent read worker reuse, error recovery, timeout and cancellation. Fake Music only.")
 }

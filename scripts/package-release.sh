@@ -28,7 +28,7 @@ for executable in AMTrack AMQueue; do
   minimum="$(/usr/bin/otool -l "$app_root/Contents/MacOS/$executable" | /usr/bin/awk '/LC_BUILD_VERSION/ { found=1 } found && $1=="minos" { print $2; exit }')"
   [[ "$minimum" == "13.0" ]] || { print -u2 "$executable has unexpected minimum macOS version: $minimum"; exit 1; }
 done
-for resource in sample library playback play catalog; do
+for resource in sample library playback play catalog read-worker; do
   /bin/cp "$source_root/Resources/$resource.js" "$app_root/Contents/Resources/$resource.js"
 done
 /bin/mkdir -p "$app_root/Contents/Resources/Recap"

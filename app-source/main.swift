@@ -182,6 +182,19 @@ final class QueryControl {
     private let lock=NSLock()
     private var cancelled=false
     private var current: Process?
+    private let readLock=NSLock()
+    private var reader: MusicReadWorker?
+    func read(_ script:String,resourceRoot:URL?=nil,timeout:Double=35) throws -> [String:Any] {
+        readLock.lock();defer { readLock.unlock() }
+        try checkCancellation()
+        do {
+            if reader == nil { reader=try MusicReadWorker(control:self,resourceRoot:resourceRoot) }
+            return try reader!.read(script,timeout:timeout)
+        } catch {
+            reader?.stop();reader=nil
+            throw error
+        }
+    }
     func checkCancellation() throws {
         lock.lock();defer{lock.unlock()}
         guard !cancelled else { throw AppError(message:"Playback preparation cancelled.") }
@@ -200,6 +213,57 @@ final class QueryControl {
         if let current,current.isRunning { current.terminate() }
     }
 }
+// One serial reader per existing QueryControl keeps playback independent of bulk reads.
+final class MusicReadWorker {
+    let process=Process(), input=Pipe(), output=Pipe()
+    private var buffer=Data()
+    private var sequence=0
+    init(control:QueryControl,resourceRoot:URL?=nil) throws {
+        guard let url=resourceRoot?.appendingPathComponent("read-worker.js") ?? Bundle.main.url(forResource:"read-worker",withExtension:"js") else { throw AppError(message:"Missing Music reader.") }
+        process.executableURL=URL(fileURLWithPath:"/usr/bin/osascript")
+        process.arguments=["-l","JavaScript",url.path]
+        process.standardInput=input;process.standardOutput=output
+        // Responses carry script errors; drain interpreter diagnostics without blocking a read.
+        process.standardError=FileHandle.nullDevice
+        // Avoid SIGPIPE terminating the app if a worker exits before a request write.
+        _=fcntl(input.fileHandleForWriting.fileDescriptor,F_SETNOSIGPIPE,1)
+        try control.launch(process)
+    }
+    deinit { stop() }
+    func stop() {
+        try? input.fileHandleForWriting.close()
+        if process.isRunning { process.terminate() }
+    }
+    func read(_ script:String,timeout:Double=35) throws -> [String:Any] {
+        sequence += 1
+        var request=try JSONSerialization.data(withJSONObject:["id":sequence,"script":script]);request.append(10)
+        try input.fileHandleForWriting.write(contentsOf:request)
+        let deadline=ProcessInfo.processInfo.systemUptime+timeout
+        while true {
+            if let newline=buffer.firstIndex(of:10) {
+                let line=buffer.prefix(upTo:newline);buffer.removeSubrange(...newline)
+                guard let response=try JSONSerialization.jsonObject(with:line) as? [String:Any],
+                      response["id"] as? Int==sequence else { throw AppError(message:"Music returned an unreadable response.") }
+                if let error=response["error"] as? String {
+                    throw AppError(message:error.contains("1743") ? "Allow AM Track to control Music in System Settings > Privacy & Security > Automation." : error)
+                }
+                guard let result=response["result"] as? [String:Any] else { throw AppError(message:"Music returned an unreadable response.") }
+                return result
+            }
+            let remaining=deadline-ProcessInfo.processInfo.systemUptime
+            guard remaining>0 else { throw AppError(message:"Music did not respond. Try again.") }
+            var descriptor=pollfd(fd:output.fileHandleForReading.fileDescriptor,events:Int16(POLLIN),revents:0)
+            let ready=Darwin.poll(&descriptor,1,Int32(min(remaining*1000,1000)))
+            if ready<0 { if errno==EINTR { continue };throw AppError(message:"Music reader disconnected.") }
+            if ready==0 { continue }
+            var bytes=[UInt8](repeating:0,count:65536)
+            let count=Darwin.read(descriptor.fd,&bytes,bytes.count)
+            guard count>0 else { throw AppError(message:"Music reader disconnected.") }
+            buffer.append(contentsOf:bytes.prefix(count))
+        }
+    }
+}
+
 func displayDate(_ string: String?) -> String {
     guard let string else { return "" }
     let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime,.withFractionalSeconds]
@@ -714,6 +778,7 @@ func displayDate(_ string: String?) -> String {
         DispatchQueue.main.async { self.refreshSuggestions(background:true) }
     }
     nonisolated static func query(_ script: String, control:QueryControl,arguments:[String]=[]) throws -> [String:Any] {
+        if arguments.isEmpty && ["playback","sample","library"].contains(script) { return try control.read(script) }
         guard let url=Bundle.main.url(forResource:script,withExtension:"js") else { throw AppError(message:"Missing Music reader.") }
         let process=Process(), output=Pipe(), errors=Pipe()
         process.executableURL=URL(fileURLWithPath:"/usr/bin/osascript")
@@ -778,6 +843,10 @@ func displayDate(_ string: String?) -> String {
     var menuSongTimer:Timer?
     var musicPlaybackObservers:[NSObjectProtocol]=[]
     var statusMenuIsOpen=false
+    var statusSymbol=""
+    var menuPresentation=""
+    var menuHeadingView:MenuHeadingHostingView?
+    var menuRecommendationsView:MenuRecommendationsView?
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
             let arguments=CommandLine.arguments
@@ -843,18 +912,54 @@ func displayDate(_ string: String?) -> String {
         guard model != nil && item != nil else { return }
         let button=item.button!
         let needsCheck = !model.error.isEmpty || !model.historyProblem.isEmpty || !model.playbackError.isEmpty
-        button.image=NSImage(systemSymbolName:needsCheck ? "exclamationmark.circle" : model.recording ? "waveform" : "music.note",accessibilityDescription:"AM Track")
-        button.image?.isTemplate=true
-        button.title = " " + (model.recording ? "On" : "Off")
+        let symbol=needsCheck ? "exclamationmark.circle" : model.recording ? "waveform" : "music.note"
+        if statusSymbol != symbol {
+            statusSymbol=symbol
+            button.image=NSImage(systemSymbolName:symbol,accessibilityDescription:"AM Track")
+            button.image?.isTemplate=true
+        }
+        let title=" " + (model.recording ? "On" : "Off")
+        if button.title != title { button.title=title }
         let toolTip="AM Track: \(model.status)"
         // Background polls must not repeatedly register the same native tooltip.
         if button.toolTip != toolTip { button.toolTip=toolTip }
         // Keep recommendation rows stable beneath the pointer until the menu closes.
         guard !statusMenuIsOpen else { return }
-        let menu=item.menu ?? NSMenu();menu.delegate=self;menu.autoenablesItems=false;menu.removeAllItems()
+        // Position still reaches the queue on every read; it does not change menu presentation.
+        var metadata=model.menuSample?.albumMetadata ?? [:];metadata.removeValue(forKey:"position")
+        let sampleKey=(try? JSONSerialization.data(withJSONObject:metadata,options:[.sortedKeys])) ?? Data()
+        let presentation=[model.error,model.playbackError,model.playbackMessage,String(model.recording),
+            model.playbackTrackID ?? "",String(reflecting:model.feedbackConfirmation),String(model.automaticQueue.enabled),
+            String(reflecting:model.suggestions),model.songFeedback.sorted{$0.key<$1.key}.map{String(reflecting:$0)}.joined(),
+            String(model.libraryDetailsBusy),sampleKey.base64EncodedString()].joined(separator:"\u{0}")
+        guard item.menu == nil || presentation != menuPresentation else { return }
+        menuPresentation=presentation
+        let menu=item.menu ?? NSMenu();menu.delegate=self;menu.autoenablesItems=false
+        var cursor=0
+        func entry(separator:Bool=false,sectionHeader:Bool=false) -> NSMenuItem {
+            func matches(_ item:NSMenuItem) -> Bool {
+                if #available(macOS 14.0, *) { return item.isSeparatorItem==separator && item.isSectionHeader==sectionHeader }
+                return item.isSeparatorItem==separator
+            }
+            let result:NSMenuItem
+            if cursor<menu.items.count && matches(menu.items[cursor]) { result=menu.items[cursor] }
+            else {
+                if cursor<menu.items.count { menu.removeItem(at:cursor) }
+                if #available(macOS 14.0, *),sectionHeader { result=NSMenuItem.sectionHeader(title:"For you") }
+                else { result=separator ? NSMenuItem.separator() : NSMenuItem() }
+                menu.insertItem(result,at:cursor)
+            }
+            cursor += 1
+            result.view=nil;result.submenu=nil;result.attributedTitle=nil;result.title=""
+            result.image=nil;result.toolTip=nil;result.representedObject=nil;result.state = .off
+            result.action=nil;result.target=nil;result.keyEquivalent="";result.isEnabled=false
+            result.isHidden=false
+            return result
+        }
+        func separator() { _=entry(separator:true) }
         menu.minimumWidth=Interface.menuWidth
         @discardableResult func add(_ title:String,_ action:Selector?=nil,_ key:String="",symbol:String?=nil) -> NSMenuItem {
-            let entry=menu.addItem(withTitle:title,action:action,keyEquivalent:key)
+            let entry=entry();entry.title=title;entry.action=action;entry.keyEquivalent=key
             entry.target=self;entry.isEnabled=action != nil
             let font=menu.font ?? NSFont.menuFont(ofSize:0)
             let fitted=menuFittedText(title,font:font,width:Interface.menuTextWidth)
@@ -866,10 +971,12 @@ func displayDate(_ string: String?) -> String {
             }
             return entry
         }
-        let heading=NSMenuItem()
-        let headingView=MenuHeadingHostingView(rootView:MenuHeading(sample:model.menuSample,recording:model.recording))
+        let heading=entry()
+        let content=MenuHeading(sample:model.menuSample,recording:model.recording)
+        let headingView=menuHeadingView ?? MenuHeadingHostingView(rootView:content)
+        headingView.rootView=content;menuHeadingView=headingView
         headingView.frame=NSRect(origin:.zero,size:headingView.fittingSize)
-        heading.view=headingView;menu.addItem(heading)
+        heading.view=headingView
         if !model.error.isEmpty {
             let entry=add(model.error)
             entry.toolTip=model.error
@@ -884,7 +991,7 @@ func displayDate(_ string: String?) -> String {
             receipt.toolTip=confirmation.message
             add("Undo feedback",#selector(undoFeedback),symbol:"arrow.uturn.backward")
         }
-        menu.addItem(.separator())
+        separator()
         let nextEntry=add(model.playbackTrackID == nil ? "Next for you" : "Updating Music…",#selector(nextForYou),symbol:"text.line.first.and.arrowtriangle.forward")
         nextEntry.isEnabled=model.playbackTrackID == nil
         nextEntry.toolTip="Queue one recommended song without interrupting playback, then keep the queue going."
@@ -895,28 +1002,31 @@ func displayDate(_ string: String?) -> String {
             let less=add(state.less ? "Remove dislike" : "Less like this",#selector(lessLikeCurrent(_:)),symbol:state.less ? "hand.thumbsdown.fill" : "hand.thumbsdown");less.representedObject=current
             less.state=state.less ? .on : .off
         }
-        menu.addItem(.separator())
+        separator()
         if #available(macOS 14.0, *) {
-            menu.addItem(NSMenuItem.sectionHeader(title:"For you"))
+            let section=entry(sectionHeader:true);section.title="For you";section.isEnabled=false
         } else {
             add("For you")
         }
         if model.suggestions.isEmpty { add(model.libraryDetailsBusy ? "Updating your library…" : "No recommendations yet") }
         if !model.suggestions.isEmpty {
-            let recommendations=NSMenuItem()
-            recommendations.view=MenuRecommendationsView(songs:model.suggestions,feedback:model.songFeedback,playbackBusy:model.playbackTrackID != nil) { [weak self, weak menu] song in
-                menu?.cancelTracking()
-                self?.model.play(song)
+            let recommendations=entry()
+            if menuRecommendationsView == nil {
+                menuRecommendationsView=MenuRecommendationsView(songs:[],feedback:[:],playbackBusy:false) { [weak self, weak menu] song in
+                    menu?.cancelTracking();self?.model.play(song)
+                }
             }
-            menu.addItem(recommendations)
+            menuRecommendationsView?.update(songs:model.suggestions,feedback:model.songFeedback,playbackBusy:model.playbackTrackID != nil)
+            recommendations.view=menuRecommendationsView
         }
-        menu.addItem(.separator())
+        separator()
         add("Monthly recap",#selector(showMonthlyRecap),symbol:"chart.bar.xaxis")
         add("Show app window",#selector(showHistory),"0",symbol:"macwindow")
         add(model.recording ? "Stop recording" : "Start recording",#selector(toggle),symbol:model.recording ? "pause.circle" : "record.circle")
-        menu.addItem(.separator())
+        separator()
         add("Quit AM Track",#selector(quit),"q")
-        item.menu=menu
+        while menu.items.count>cursor { menu.removeItem(at:menu.items.count-1) }
+        if item.menu !== menu { item.menu=menu }
     }
     func menuWillOpen(_ menu:NSMenu) {
         if Date()>=model.nextRecommendations { model.reload() }
@@ -997,7 +1107,7 @@ func selfTest() throws {
             app.delegate=preview;app.run()
             withExtendedLifetime(preview) {}
         } else if CommandLine.arguments.contains("--self-test") {
-            do { try menuLayoutTests();try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try monthlyRankingTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
+            do { try readWorkerTests();try menuLayoutTests();try onboardingTests();try selfTest();try historyTests();try manualHistoryTests();try unifiedHistoryTests();try monthlyRankingTests();try playbackTests();try forYouRefreshTests();try musicQueueTests();try automaticQueueTests();try oneAheadTests();try cachedReserveTests();try cachedAlbumTests();try recommendationTests();try recommendationRotationTests();try recommendationMigrationTests() } catch { fputs("Self-test failed: \(error)\n",stderr);exit(1) }
         } else if CommandLine.arguments.contains("--queue-access-status") {
             print("Queue backend: MediaPlaybackCore background insertion; no Accessibility permission required")
         } else if CommandLine.arguments.contains("--upgrade-only") {

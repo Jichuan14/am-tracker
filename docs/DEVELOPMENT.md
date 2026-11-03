@@ -43,6 +43,21 @@ This builds and tests the optimized Release app, reconstructs a clean bundle fro
 | `app-source/build.sh`, `Info.plist` | Build script and app configuration |
 | `docs/images/` | App screenshots used by both README versions |
 
+## Playback reads and menu lifetime
+
+Read-only `playback`, `sample`, and `library` requests reuse a serial `osascript`
+worker per `QueryControl`, with newline-delimited JSON request IDs and the existing
+35-second deadline. Playback observation has its own worker so bulk library reads
+cannot delay queue observations. Errors discard the worker; the next request may
+start a replacement. Recording cancellation terminates its worker. Commands that
+change playback or insert songs retain their existing execution paths and are
+never replayed by the read transport.
+
+The two-second playback and five-second recording timers are unchanged. Menu
+presentation ignores position-only changes while automatic queue observation still
+receives every sample. Native menu items, the SwiftUI header, and recommendation
+table are reused; changes to menu contents wait until an open menu closes.
+
 ## Keep runtime data out of the repository
 
 Runtime files include `history.sqlite3`, `history.csv`, `status.json`, `database-health.json`, backups, and any selected `History.dat`. They contain private listening information and should stay local. Use **Open data folder** in the app to locate them.

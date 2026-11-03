@@ -443,9 +443,9 @@ final class MenuHeadingHostingView: NSHostingView<MenuHeading> {
 
 // Keep the complete batch inside a five-row viewport so menu commands stay put.
 final class MenuRecommendationsView: NSScrollView, NSTableViewDataSource, NSTableViewDelegate {
-    let songs: [Recommendation]
-    private let feedback: [String: RecommendationFeedback]
-    private let playbackBusy: Bool
+    private(set) var songs: [Recommendation]
+    private var feedback: [String: RecommendationFeedback]
+    private var playbackBusy: Bool
     private let play: (Recommendation) -> Void
     let table = MenuRecommendationsTable()
 
@@ -479,6 +479,13 @@ final class MenuRecommendationsView: NSScrollView, NSTableViewDataSource, NSTabl
         table.frame = NSRect(x: 0, y: 0, width: Interface.menuWidth, height: CGFloat(songs.count) * 44)
         table.autoresizingMask = [.width]
         documentView = table
+        table.reloadData()
+    }
+
+    func update(songs:[Recommendation],feedback:[String:RecommendationFeedback],playbackBusy:Bool) {
+        self.songs=songs;self.feedback=feedback;self.playbackBusy=playbackBusy
+        frame.size.height=CGFloat(min(songs.count,5))*44
+        table.frame.size.height=CGFloat(songs.count)*44
         table.reloadData()
     }
 

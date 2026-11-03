@@ -6,9 +6,9 @@ struct QueueSongMetadata {
     let artist:String
     let album:String
     let duration:Double
-    func matches(_ sample:Sample) -> Bool {
+    func matches(_ sample:Sample,includingAlbum:Bool=true) -> Bool {
         !title.isEmpty && !artist.isEmpty && !album.isEmpty && duration.isFinite && duration>0 &&
-        sample.title==title && sample.artist==artist && sample.album==album &&
+        sample.title==title && sample.artist==artist && !sample.album.isEmpty && (!includingAlbum || sample.album==album) &&
         sample.duration.isFinite && sample.duration>0 && abs(sample.duration-duration)<=2
     }
 }
@@ -111,10 +111,14 @@ struct AutomaticQueue {
         // A pause or a brief stopped state between songs is not a consumed song.
         guard sample.state=="playing",let id=sample.musicPersistentID else { return }
         var identities:Set<String>=[id]
-        // Music creates new URL-track IDs for catalog insertions. Match only
-        // against our own ledger, with complete metadata and one unique result.
+        // Music creates new URL-track IDs and can substitute an album release
+        // for a library single. Prefer exact metadata, then one unique recording
+        // match among active songs only; retired entries must not cause ambiguity.
         if !knownIDs.contains(id),sample.albumMetadata["track_class"] as? String == "urlTrack" {
-            let matches=metadata.filter{$0.value.matches(sample)}.map{$0.key}
+            let activeIDs=songs.reduce(into:albumIDs) { $0.formUnion($1) }
+            let active=metadata.filter{activeIDs.contains($0.key)}
+            let exact=active.filter{$0.value.matches(sample)}
+            let matches=(exact.isEmpty ? active.filter{$0.value.matches(sample,includingAlbum:false)} : exact).map{$0.key}
             guard matches.count==1 else { return }
             identities.insert(matches[0])
         }
@@ -124,6 +128,9 @@ struct AutomaticQueue {
             // one of our known songs appears without growing an unrelated queue.
             return
         }
+        // Bind the observed URL-track ID once. Later incomplete metadata reads
+        // cannot lose this song or turn repeated observations into departures.
+        songs[index].formUnion(identities);knownIDs.formUnion(identities)
         let playing=songs[index]
         if waitingForAlbum {
             waitingForAlbum=false;observedIDs=playing;pendingReplacements=1;return
